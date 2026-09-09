@@ -19,7 +19,7 @@ name: Fantasy Rooting Agent
 on:
   push:
     branches: [master]
-    paths: [".github/workflows/agent.yml"]
+    paths: [".github/workflows/rooting-agent.yml"]
   schedule:
     - cron: "2,7,12,17,22,27,32,37,42,47,52,57 * * * *"
   workflow_dispatch: {}   # lets you click "Run workflow" in the GitHub UI to test

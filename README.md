@@ -556,7 +556,7 @@ re-reads ESPN, Sleeper and the schedule from scratch — this app is a natural f
 with Telegram or ntfy since neither depends on this Mac. (iMessage does *not* work here —
 no macOS runner, no Messages.app — which is exactly why Telegram/ntfy exist.)
 
-`.github/workflows/agent.yml` is already in this repo. It runs every 5 minutes (GitHub's
+`.github/workflows/rooting-agent.yml` is already in this repo. It runs every 5 minutes (GitHub's
 shortest allowed interval), calls `morning`, `run-once` and `live --once` — each is a
 no-op unless something is actually due, so this is safe to run constantly — and commits
 the updated SQLite dedupe state back to the repo so nothing double-fires across runs.
@@ -588,14 +588,14 @@ gh secret set ESPN_SWID < <(grep ^ESPN_SWID= ~/.fantasy-agent/.env | cut -d= -f2
 gh secret set TELEGRAM_BOT_TOKEN < <(grep ^TELEGRAM_BOT_TOKEN= ~/.fantasy-agent/.env | cut -d= -f2-)
 gh secret set TELEGRAM_CHAT_ID < <(grep ^TELEGRAM_CHAT_ID= ~/.fantasy-agent/.env | cut -d= -f2-)
 # using ntfy instead? set NTFY_SERVER / NTFY_TOPIC the same way, and change
-# NOTIFIER=telegram to NOTIFIER=ntfy near the top of .github/workflows/agent.yml
+# NOTIFIER=telegram to NOTIFIER=ntfy near the top of .github/workflows/rooting-agent.yml
 ```
 
 **Enable it:** GitHub Actions runs automatically once the workflow file is pushed — no
 extra toggle needed for a repo you just created. Verify from the **Actions** tab, or:
 
 ```bash
-gh workflow run agent.yml     # trigger one run immediately, without waiting for the cron
+gh workflow run rooting-agent.yml     # trigger one run immediately, without waiting for the cron
 gh run watch                  # follow it live
 ```
 
