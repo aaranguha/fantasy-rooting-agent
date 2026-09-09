@@ -1,0 +1,90 @@
+{
+  "sleeper_username": "aaranguha",
+  "sleeper_user_id": "1004544373054365696",
+  "timezone": "America/Los_Angeles",
+  "minutes_before": 15,
+  "notifier": "telegram",
+  "season": 2026,
+  "include_slots": [
+    "TNF",
+    "SNF",
+    "MNF",
+    "PRIMETIME",
+    "HOLIDAY",
+    "INTERNATIONAL"
+  ],
+  "morning_summary": true,
+  "morning_summary_time": "09:00",
+  "leagues": [
+    {
+      "platform": "sleeper",
+      "league_id": "1397852671301410816",
+      "name": "I MEAN WE COULDD\ud83e\udd19",
+      "buy_in_usd": 0.0,
+      "importance_multiplier": 0.75,
+      "my_team_id": "1",
+      "season": 2026,
+      "notes": "",
+      "loser_punishment": 0.0,
+      "punished_places": 1,
+      "dynamic_importance": true,
+      "low_priority": true
+    },
+    {
+      "platform": "sleeper",
+      "league_id": "1384648076613931009",
+      "name": "Turf Wars",
+      "buy_in_usd": 50.0,
+      "importance_multiplier": 1.0,
+      "my_team_id": "12",
+      "season": 2026,
+      "notes": "",
+      "loser_punishment": 0.0,
+      "punished_places": 1,
+      "dynamic_importance": true,
+      "low_priority": false
+    },
+    {
+      "platform": "sleeper",
+      "league_id": "1361127952149905408",
+      "name": "Dynasties and Dystopia ",
+      "buy_in_usd": 40.0,
+      "importance_multiplier": 1.0,
+      "my_team_id": "2",
+      "season": 2026,
+      "notes": "",
+      "loser_punishment": 0.0,
+      "punished_places": 1,
+      "dynamic_importance": true,
+      "low_priority": false
+    },
+    {
+      "platform": "espn",
+      "league_id": "69302",
+      "name": "Gary Harris",
+      "buy_in_usd": 50.0,
+      "importance_multiplier": 1.25,
+      "my_team_id": "6",
+      "season": 2026,
+      "notes": "",
+      "loser_punishment": 0.75,
+      "punished_places": 1,
+      "dynamic_importance": true,
+      "low_priority": false
+    },
+    {
+      "platform": "espn",
+      "league_id": "17066781",
+      "name": "\ud83c\udfc8Fantasy Football\ud83c\udfc8",
+      "buy_in_usd": 35.0,
+      "importance_multiplier": 1.25,
+      "my_team_id": "1",
+      "season": 2026,
+      "notes": "",
+      "loser_punishment": 0.0,
+      "punished_places": 1,
+      "dynamic_importance": true,
+      "low_priority": false
+    }
+  ]
+}
