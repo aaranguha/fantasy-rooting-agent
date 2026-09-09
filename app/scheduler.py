@@ -21,10 +21,14 @@ from .formatting import phone_message, phone_title
 from .live import (
     DEFAULT_THRESHOLD, Snapshot, detect_events, live_message, live_title, take_snapshot,
 )
-from .models import NFLGame, PlayerGameState
+from .models import NFLGame, PlayerGameState, SlotType
 from .morning import games_today, is_due, parse_hhmm
 from .notifiers import Notifier, autoselect
 from .providers.base import ProviderError
+from .sunday_slate import (
+    condensed_digest, earliest_kickoff, is_sunday, second_slate_title,
+    slate_games, sunday_morning_title,
+)
 
 log = logging.getLogger(__name__)
 
@@ -201,6 +205,9 @@ class Scheduler:
 
         today = games_today(_primetime(games, self.cfg.include_slots), tz,
                             on=(now or datetime.now(tz)).astimezone(tz).date())
+        # SNF gets its own coverage on Sundays - see sunday_morning_tick(). A
+        # per-game preview here would just duplicate it.
+        today = [g for g in today if g.slot != SlotType.SNF]
         if not today:
             return []
 
@@ -211,6 +218,96 @@ class Scheduler:
             if r is not None:
                 results.append(r)
         return results
+
+    # -- Sunday early/late slate coverage ------------------------------------
+    def sunday_morning_tick(self, *, now: Optional[datetime] = None,
+                            force: bool = False) -> Optional[tuple[bool, str]]:
+        """Once on Sunday morning: a condensed strong-signal-only digest across
+        BOTH the early and late windows, replacing what would otherwise be a
+        per-game SNF preview. Returns None when nothing was due."""
+        if not self.cfg.morning_summary and not force:
+            return None
+        tz = self.cfg.tz
+        if not force and not is_sunday(tz, now=now):
+            return None
+        target = parse_hhmm(self.cfg.morning_summary_time)
+        if not force and not is_due(target, tz, now=now):
+            return None
+
+        key = f"sunday-morning:{(now or datetime.now(tz)).astimezone(tz):%Y-%m-%d}"
+        if not force and self.db.was_sent(key, 0, 0):
+            return None
+
+        try:
+            season, week, stype = self.analyzer.resolve_week()
+            games = self.analyzer.nfl.games(season, week, stype, cache_ttl=300)
+        except ProviderError as exc:
+            log.error("Could not load the NFL schedule for the Sunday digest: %s", exc)
+            return False, str(exc)
+
+        today = (now or datetime.now(tz)).astimezone(tz).date()
+        slate = slate_games(games, on=today, tz=tz)
+        if not slate and not force:
+            return None
+
+        ctx = self.analyzer.load_week(week, refresh=True)
+        guides = [self.analyzer.analyze_game(ctx, g) for g in slate]
+        title = sunday_morning_title(tz, now=now)
+        body = condensed_digest(guides)
+
+        result = self.notifier.send(title, body)
+        self.db.log_send(key, result.provider, result.ok, result.attempts, result.detail)
+        if result.ok and not result.dry_run:
+            # (0, 0): the date is already baked into `key`, so season/week add
+            # no disambiguation here - and must match the was_sent() check above.
+            self.db.mark_sent(game_id=key, season=0, week=0, slot="SUNDAY_MORNING",
+                              matchup=f"{len(slate)} game(s)", provider=result.provider, body=body)
+        return result.ok, result.detail
+
+    def sunday_second_slate_tick(self, *, now: Optional[datetime] = None,
+                                 force: bool = False) -> Optional[tuple[bool, str]]:
+        """15 minutes before the late window kicks off: a fresh condensed
+        digest scoped to the late window, recomputed on real early-window
+        results. Returns None when nothing was due."""
+        tz = self.cfg.tz
+        if not force and not is_sunday(tz, now=now):
+            return None
+
+        try:
+            season, week, stype = self.analyzer.resolve_week()
+            games = self.analyzer.nfl.games(season, week, stype, cache_ttl=120)
+        except ProviderError as exc:
+            log.error("Could not load the NFL schedule for the second-slate update: %s", exc)
+            return False, str(exc)
+
+        today = (now or datetime.now(tz)).astimezone(tz).date()
+        late = slate_games(games, window="late", on=today, tz=tz)
+        if not late:
+            return None
+        kickoff = earliest_kickoff(late)
+        if kickoff is None:
+            return None
+
+        fire_at = kickoff - timedelta(minutes=self.cfg.minutes_before)
+        now_utc = now or datetime.now(timezone.utc)
+        if not force and not (fire_at <= now_utc <= fire_at + LATE_GRACE):
+            return None
+
+        key = f"sunday-second-slate:{today:%Y-%m-%d}"
+        if not force and self.db.was_sent(key, 0, 0):
+            return None
+
+        ctx = self.analyzer.load_week(week, refresh=True)
+        guides = [self.analyzer.analyze_game(ctx, g) for g in late]
+        title = second_slate_title()
+        body = condensed_digest(guides)
+
+        result = self.notifier.send(title, body)
+        self.db.log_send(key, result.provider, result.ok, result.attempts, result.detail)
+        if result.ok and not result.dry_run:
+            self.db.mark_sent(game_id=key, season=0, week=0, slot="SUNDAY_SECOND_SLATE",
+                              matchup=f"{len(late)} game(s)", provider=result.provider, body=body)
+        return result.ok, result.detail
 
     def preview_game(self, game: NFLGame, *, week: Optional[int] = None,
                      force: bool = True, now: Optional[datetime] = None
@@ -300,6 +397,20 @@ class Scheduler:
                                 game.matchup, "SENT" if ok else "FAILED", detail)
                 except Exception:  # noqa: BLE001
                     log.exception("Morning preview tick blew up; continuing")
+                try:
+                    result = self.sunday_morning_tick()
+                    if result:
+                        log.info("Sunday morning digest -> %s (%s)",
+                                "SENT" if result[0] else "FAILED", result[1])
+                except Exception:  # noqa: BLE001
+                    log.exception("Sunday morning tick blew up; continuing")
+                try:
+                    result = self.sunday_second_slate_tick()
+                    if result:
+                        log.info("Sunday second-slate update -> %s (%s)",
+                                "SENT" if result[0] else "FAILED", result[1])
+                except Exception:  # noqa: BLE001
+                    log.exception("Sunday second-slate tick blew up; continuing")
 
             if live and (time.monotonic() - last_live) >= live_every:
                 last_live = time.monotonic()

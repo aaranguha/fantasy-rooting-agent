@@ -477,6 +477,46 @@ def morning_cmd(force: bool, dry_run: bool, query: Optional[str], week: Optional
         console.print(f"{game.matchup}: {'[green]sent[/]' if ok else '[red]failed[/]'} — {detail}")
 
 
+@cli.command("sunday-morning")
+@click.option("--force", is_flag=True, help="Send now regardless of the day, time, or dedupe")
+@click.option("--dry-run", is_flag=True, help="Build and print, but send nothing")
+def sunday_morning_cmd(force: bool, dry_run: bool) -> None:
+    """Send (or preview) the condensed Sunday early+late slate digest.
+
+    Only names with a strong signal (🚀 🟢 🟥 🔴/☠️) - the toss-up and mild-lean
+    colors are left out on purpose to keep this a quick read. This replaces
+    the per-game morning preview for SNF specifically; TNF and MNF still get
+    their own full preview via `fantasy-agent morning`.
+    """
+    cfg = _cfg()
+    sched = Scheduler(cfg, dry_run=dry_run)
+    result = sched.sunday_morning_tick(force=force)
+    if result is None:
+        console.print("[yellow]Not due — not Sunday, no slate games, already sent, "
+                      "or before the configured time.[/] Use --force to override.")
+        return
+    ok, detail = result
+    console.print(f"{'[green]sent[/]' if ok else '[red]failed[/]'}: {detail}")
+
+
+@cli.command("sunday-second-slate")
+@click.option("--force", is_flag=True, help="Send now regardless of timing or dedupe")
+@click.option("--dry-run", is_flag=True, help="Build and print, but send nothing")
+def sunday_second_slate_cmd(force: bool, dry_run: bool) -> None:
+    """Send (or preview) the second condensed digest, 15 minutes before the
+    late Sunday window - recomputed on real early-window results."""
+    cfg = _cfg()
+    sched = Scheduler(cfg, dry_run=dry_run)
+    result = sched.sunday_second_slate_tick(force=force)
+    if result is None:
+        console.print("[yellow]Not due — not Sunday, no late-window games, "
+                      "already sent, or not within 15 minutes of the late window.[/] "
+                      "Use --force to override.")
+        return
+    ok, detail = result
+    console.print(f"{'[green]sent[/]' if ok else '[red]failed[/]'}: {detail}")
+
+
 @cli.command("test-notification")
 @click.option("--provider", default=None, help="imessage / ntfy / telegram / console / twilio")
 @click.option("--real", is_flag=True,

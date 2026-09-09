@@ -59,11 +59,13 @@ jobs:
           TZ=America/Los_Angeles
           EOF
 
-      - name: Morning preview, kickoff push, live updates
+      - name: Morning preview, kickoff push, live updates, Sunday slate
         run: |
-          fantasy-agent morning   || echo "morning: nothing due"
-          fantasy-agent run-once  || echo "run-once: nothing due"
-          fantasy-agent live --once || echo "live: nothing due"
+          fantasy-agent morning              || echo "morning: nothing due"
+          fantasy-agent sunday-morning       || echo "sunday-morning: nothing due"
+          fantasy-agent sunday-second-slate  || echo "sunday-second-slate: nothing due"
+          fantasy-agent run-once             || echo "run-once: nothing due"
+          fantasy-agent live --once          || echo "live: nothing due"
 
       - name: Persist dedupe / snapshot state
         run: |

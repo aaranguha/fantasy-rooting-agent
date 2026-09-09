@@ -53,7 +53,12 @@ def cfg_with(**kw) -> AppConfig:
 
 
 def et_game(gid: str, kickoff_et: datetime) -> "NFLGame":
-    g = make_game("NE", "SEA", gid=gid)
+    # MNF, not SNF (make_game's default): these tests exercise the generic
+    # per-game morning-preview mechanism, which now deliberately skips SNF
+    # (SNF gets its own Sunday-slate digest - see test_sunday_slate.py).
+    from app.models import SlotType
+
+    g = make_game("NE", "SEA", gid=gid, slot=SlotType.MNF)
     g.kickoff = kickoff_et.replace(tzinfo=ZoneInfo("America/New_York"))
     return g
 
