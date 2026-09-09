@@ -1,9 +1,12 @@
 name: Fantasy Rooting Agent
 
-# Runs the whole notification pipeline every 5 minutes - GitHub's shortest
-# allowed cron interval. That's plenty of resolution: the app's own logic has
-# a 12-minute grace window around kickoff and a 3-hour one for the morning
-# preview, so a 5-minute cadence never misses a window.
+# Runs the whole notification pipeline every 5 minutes. That's plenty of
+# resolution: the app's own logic has a 12-minute grace window around kickoff
+# and a 3-hour one for the morning preview, so a 5-minute cadence never misses
+# a window. The minute list is offset by 2 (2,7,12,...) rather than a plain
+# */5 - GitHub's scheduler deprioritizes jobs queued at round 5-minute
+# boundaries under load, since every OTHER schedule on the platform tends to
+# fire there too; an off-beat offset gets serviced more reliably.
 #
 # Nothing here needs your Mac. ESPN, Sleeper and Telegram are all reached over
 # the internet from GitHub's runners; the only thing this can't do is iMessage
@@ -18,7 +21,7 @@ on:
     branches: [master]
     paths: [".github/workflows/agent.yml"]
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "2,7,12,17,22,27,32,37,42,47,52,57 * * * *"
   workflow_dispatch: {}   # lets you click "Run workflow" in the GitHub UI to test
 
 # Never let two runs race on the same state; queue instead of overlapping.
