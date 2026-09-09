@@ -496,11 +496,11 @@ def test_notification(provider: Optional[str], real: bool, week: Optional[int],
                           "Drop the flag to test with your real week.[/]")
         title = "🧪 SAMPLE (not real) — SNF in 15: DAL @ PHI"
         body = ("🧪 EXAMPLE DATA — these players and leagues are made up.\n\n"
-                "🔥 A.J. Brown · GO OFF (proj: 16)\n"
+                "🚀 A.J. Brown · GO OFF (proj: 16)\n"
                 "   ours: Dynasty, Work League\n\n"
                 "☠️ CeeDee Lamb · UNDER 22\n"
                 "   vs us: Dynasty, Family\n\n"
-                "⚖️ Saquon Barkley · WANT 17-26\n"
+                "🟧 Saquon Barkley · WANT 17-26\n"
                 "   ours: Work League\n"
                 "   vs us: Family\n\n"
                 "🎯 Dynasty is tightest (52% to win)")

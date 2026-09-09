@@ -14,10 +14,10 @@ win probability** — then tells you what to want.
 ```
 🏈 TNF in 15: SF @ LAR
 
-🟢 Puka Nacua · GO OFF (proj: 19)
+🚀 Puka Nacua · GO OFF (proj: 19)
    ours: Gary Harris, Dynasties and Dystopia
 
-⚖️ Kyren Williams · WANT 12-15
+🟧 Kyren Williams · WANT 12-15
    ours: Turf Wars
    vs us: Fantasy Football
 
@@ -128,6 +128,35 @@ These cookies rotate when you sign out of ESPN. If ESPN leagues start failing wi
 auth error, re-run the script (or re-copy them) and try again.
 
 **Public** ESPN leagues need no cookies at all.
+
+### The emoji is a story, not decoration
+
+Every player in a push carries one leading emoji, and it's chosen to answer a
+specific question at a glance:
+
+| Emoji | Meaning |
+|---|---|
+| ☠️ | Public enemy #1 - the single worst threat in this game |
+| 🚀 | No real downside anywhere - let him cook |
+| 🟢 | Rostered on both sides, but the real leverage comfortably favors ours |
+| 🟡 | Rostered on both sides, genuinely split |
+| 🟧 | Rostered on both sides, the real leverage leans against you |
+| 🟥 | Rostered on both sides, heavily against you despite owning him somewhere |
+| 🔴 | Plain root-against: faced somewhere, owned nowhere |
+
+**This is dynamic, not a league count.** 🚀 through 🟥 are driven by *leverage* - each
+league's `dollar_swing` (its stake, weighted by how much this player's performance can
+actually move that specific matchup's win probability) - not by how many leagues he's
+merely rostered in. A league you're already winning by 40 contributes close to nothing
+to this story no matter its buy-in, because nothing he does there can flip it.
+
+That means a player owned in 1 league and faced in 2 can still be a 🚀: if both leagues
+you face him in are blowouts he can't touch and the one you own him in is a nail-biter
+you genuinely need him for, there's no real downside anywhere, so root freely. It cuts
+the other way too - owning him in a league you've already locked up while facing him in
+one real coin-flip reads 🟥, despite technically being "yours" somewhere. The color
+answers "how much do I actually have to fear him," not "in how many spreadsheets is his
+name on my roster."
 
 ### League importance is deliberately transparent
 
@@ -270,7 +299,7 @@ The maths is also covered by the test suite:
 
 ```bash
 pip install -e '.[dev]'
-pytest -q          # 214 tests, no network access required
+pytest -q          # 224 tests, no network access required
 ```
 
 Notable cases it locks down:
@@ -648,7 +677,7 @@ app/
   notifiers/      base · console · imessage · ntfy · telegram · twilio
   db/database.py  SQLite dedupe + send log
   dashboard/      local web UI (stdlib only)
-tests/            214 tests, fully mocked
+tests/            224 tests, fully mocked
 ```
 
 **Data sources**

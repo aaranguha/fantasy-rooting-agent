@@ -186,3 +186,181 @@ def test_public_enemy_is_awarded_to_the_single_worst_player():
     assert players[0].public_enemy and players[0].category is RootingCategory.PUBLIC_ENEMY
     assert not players[1].public_enemy
     assert "public enemy" in players[0].narrative().lower()
+
+
+# ---------------------------------------------------------------------------
+# Emoji story: count-based spectrum for a player rostered on both sides
+# ---------------------------------------------------------------------------
+
+def test_conflict_emoji_matches_the_exact_examples_requested():
+    """1 league ours, 2 against -> a darker/leans-against color. Pure ours,
+    no downside anywhere -> the rocket."""
+    from app.rooting import conflict_emoji
+
+    assert conflict_emoji(1, 2) == "\U0001f7e7"   # 🟧
+
+
+def test_pure_upside_player_gets_the_rocket_regardless_of_league_count():
+    x = player("A.J. Brown", "WR", "PHI")
+    states = []
+    for name, money in (("Turf Wars", 50), ("Fantasy Football", 35)):
+        lg = make_league(name, money)
+        states.append(make_state(lg,
+                                 my_players=[(x, 16.0, 0, GS.NOT_STARTED)] + filler("m", 8, 13),
+                                 opp_players=filler("t", 9, 14.5)))
+    r = analyze_player(curve_for(x, states))
+    assert not r.is_conflicted
+    assert r.emoji == "\U0001f680"   # 🚀
+
+
+def test_the_conflict_spectrum_runs_green_to_red_as_the_balance_shifts():
+    """3 owned vs 1 faced (comfortably ours) down to 1 owned vs 5 faced
+    (heavily against) - the color should trend the same direction as the count."""
+    from app.rooting import conflict_emoji
+
+    green = conflict_emoji(3, 1)     # ratio .75
+    yellow = conflict_emoji(1, 1)    # ratio .50
+    orange = conflict_emoji(1, 2)    # ratio .333
+    red = conflict_emoji(1, 5)       # ratio .167
+
+    assert green == "\U0001f7e2"
+    assert yellow == "\U0001f7e1"
+    assert orange == "\U0001f7e7"
+    assert red == "\U0001f7e5"
+    # And the ordering is a genuine ramp, not an arbitrary set of colors.
+    order = ["\U0001f7e5", "\U0001f7e7", "\U0001f7e1", "\U0001f7e2"]
+    assert [order.index(e) for e in (red, orange, yellow, green)] == sorted(
+        order.index(e) for e in (red, orange, yellow, green))
+
+
+def test_a_two_league_lean_toward_ours_reads_green_not_yellow():
+    """2 owned vs 1 faced is a real conflict but comfortably favors us."""
+    x = player("Kyren Williams", "RB", "LAR")
+    a, b, c = make_league("A", 50), make_league("B", 40), make_league("C", 35)
+    states = [
+        make_state(a, my_players=[(x, 15.0, 0, GS.NOT_STARTED)] + filler("m", 8, 13),
+                  opp_players=filler("t", 9, 14)),
+        make_state(b, my_players=[(x, 15.0, 0, GS.NOT_STARTED)] + filler("m", 8, 13),
+                  opp_players=filler("t", 9, 14)),
+        make_state(c, my_players=filler("m", 9, 14),
+                  opp_players=[(x, 15.0, 0, GS.NOT_STARTED)] + filler("t", 8, 13)),
+    ]
+    r = analyze_player(curve_for(x, states))
+    assert r.is_conflicted
+    assert r.emoji == "\U0001f7e2"
+
+
+def test_public_enemy_still_wins_over_the_conflict_spectrum():
+    """A player worst-in-game still gets the skull even if he's technically
+    rostered somewhere of ours too."""
+    from app.rooting import mark_public_enemy
+
+    villain = player("Josh Allen", "QB", "BUF")
+    lg_big = make_league("Dynasty", 100)
+    lg_small = make_league("Tiny", 5)
+    v_state = make_state(lg_big, my_players=filler("m", 9, 14.0),
+                         opp_players=[(villain, 22.0, 0, GS.NOT_STARTED)] + filler("t", 8, 13))
+    tiny_state = make_state(lg_small,
+                            my_players=[(villain, 22.0, 0, GS.NOT_STARTED)] + filler("m", 8, 13),
+                            opp_players=filler("t", 9, 14))
+    r = analyze_player(curve_for(villain, [v_state, tiny_state]))
+    mark_public_enemy([r])
+    assert r.public_enemy
+    assert r.emoji == "☠️"
+
+
+def test_pure_against_player_keeps_the_ordinary_category_emoji():
+    """Owned nowhere, faced everywhere - not a conflict, no rocket, no
+    spectrum: just the plain root-against red."""
+    x = player("CeeDee Lamb", "WR", "DAL")
+    states = []
+    for name, money in (("Dynasty", 100), ("Work", 35), ("Family", 20)):
+        lg = make_league(name, money)
+        states.append(make_state(lg,
+                                 my_players=filler("m", 9, 14.0),
+                                 opp_players=[(x, 17.0, 0, GS.NOT_STARTED)] + filler("t", 8, 13)))
+    r = analyze_player(curve_for(x, states))
+    assert r.category.is_negative
+    assert r.emoji == "\U0001f534"   # 🔴, unchanged
+
+
+# ---------------------------------------------------------------------------
+# The emoji is now DYNAMIC: leverage, not raw league count, drives the color
+# ---------------------------------------------------------------------------
+
+def test_a_blowout_we_face_him_in_cannot_drag_down_a_rocket():
+    """Exact scenario requested: we can afford him going off in another league
+    because we're up so much there, and we need him where we own him ->
+    should still read as a rocket, even though he's technically 'faced'
+    somewhere too."""
+    x = player("Puka Nacua", "WR", "LAR")
+
+    # Owned in a close league: we genuinely need him.
+    need_lg = make_league("Gary Harris", 50)
+    need_state = make_state(need_lg,
+                            my_players=[(x, 18.0, 0, GS.NOT_STARTED)] + finished("m", 8, 12.0),
+                            opp_players=finished("t", 9, 13.3))
+
+    # Faced in a league we're already winning by a mile - his output there
+    # cannot flip anything, no matter how big it is.
+    blowout_lg = make_league("Casual League", 20)
+    blowout_state = make_state(blowout_lg,
+                               my_players=finished("m", 9, 30.0),
+                               opp_players=[(x, 18.0, 0, GS.NOT_STARTED)] + finished("t", 8, 5.0))
+
+    r = analyze_player(curve_for(x, [need_state, blowout_state]))
+    assert r.is_conflicted, "structurally he IS rostered on both sides"
+    # Raw counts would say 1-owned/1-faced -> yellow toss-up under the old
+    # count-based scheme. The dynamic version must see through that.
+    assert r.emoji == "\U0001f680", (
+        f"expected a rocket since the faced league carries no real leverage, got {r.emoji}")
+
+
+def test_a_locked_up_league_we_own_him_in_cannot_save_him_from_a_real_threat():
+    """The mirror case: owning him in an already-decided league contributes
+    nothing, while facing him in a genuine nail-biter is real danger ->
+    should read as heavily against, not upside, despite owning him somewhere."""
+    x = player("Josh Allen", "QB", "BUF")
+
+    # Owned in a league we've already locked up - his stat line changes nothing.
+    locked_lg = make_league("Locked League", 20)
+    locked_state = make_state(locked_lg,
+                              my_players=[(x, 22.0, 0, GS.NOT_STARTED)] + finished("m", 8, 30.0),
+                              opp_players=finished("t", 9, 5.0))
+
+    # Faced in a genuine coin-flip league - real money on the line.
+    close_lg = make_league("Dynasty", 100)
+    close_state = make_state(close_lg,
+                             my_players=finished("m", 9, 12.0),
+                             opp_players=[(x, 22.0, 0, GS.NOT_STARTED)] + finished("t", 8, 12.0))
+
+    r = analyze_player(curve_for(x, [locked_state, close_state]))
+    assert r.is_conflicted, "structurally he IS rostered on both sides"
+    assert r.emoji in ("\U0001f7e7", "\U0001f7e5"), (
+        f"expected an against-leaning color since the owned league carries no "
+        f"real leverage and the faced league is a genuine threat, got {r.emoji}")
+
+
+def test_two_blowouts_on_both_sides_still_reads_as_a_rocket():
+    """If NEITHER side has any real leverage, there's nothing to fear either -
+    still a rocket, not a coin-flip yellow."""
+    x = player("Nobody Special", "WR", "PHI")
+    own_blowout = make_league("Own Blowout", 30)
+    face_blowout = make_league("Face Blowout", 30)
+    s1 = make_state(own_blowout,
+                    my_players=[(x, 14.0, 0, GS.NOT_STARTED)] + finished("m", 8, 30.0),
+                    opp_players=finished("t", 9, 5.0))
+    s2 = make_state(face_blowout,
+                    my_players=finished("m", 9, 30.0),
+                    opp_players=[(x, 14.0, 0, GS.NOT_STARTED)] + finished("t", 8, 5.0))
+    r = analyze_player(curve_for(x, [s1, s2]))
+    assert r.emoji == "\U0001f680"
+
+
+def test_conflict_emoji_accepts_weighted_dollar_amounts_not_just_counts():
+    from app.rooting import conflict_emoji
+
+    # $30 owned vs $90 faced -> ratio .25 -> leans against, same bucket logic
+    # as the count-based examples, just fed real dollar amounts.
+    assert conflict_emoji(30.0, 90.0) == "\U0001f7e7"
+    assert conflict_emoji(90.0, 10.0) == "\U0001f7e2"

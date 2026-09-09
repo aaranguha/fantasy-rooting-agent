@@ -19,6 +19,40 @@ from .thresholds import Threshold, compute_threshold
 HARD_FOR, FOR, SLIGHT_FOR = 30.0, 12.0, 4.0
 LOW_PERF, HIGH_PERF = 0.30, 1.70   # multiples of the player's projection
 
+# Dynamic emoji spectrum for a player rostered on both sides at once (spec:
+# "give more of a proper story per player" - and make it dynamic, not just a
+# league count).  The ratio here is WEIGHTED leverage - each side's summed
+# `dollar_swing` (league weight x how much this player can actually move that
+# league's win probability) - not a raw count of leagues.  That's the whole
+# point: a league we're up 60 points in contributes ~$0 of real leverage no
+# matter how big its buy-in is, because his stat line there can't change
+# anything.  So "owned in 1, facing in 2" can still read as pure upside (🚀) if
+# both leagues we face him in are blowouts we can absorb - and, going the other
+# way, "owned in 2, facing in 1" can read as heavily against (🟥) if the one we
+# own him in is already decided and the one we face him in is a nail-biter.
+_NO_LEVERAGE = 1.0   # dollars; below this, a league's swing is noise, not a story
+
+_CONFLICT_SPECTRUM = (
+    (0.60, "\U0001f7e2"),   # 🟢 comfortably ours despite the conflict
+    (0.40, "\U0001f7e1"),   # 🟡 a genuine toss-up
+    (0.20, "\U0001f7e7"),   # 🟧 leans against
+    (0.00, "\U0001f7e5"),   # 🟥 heavily against, though we own him somewhere
+)
+
+
+def conflict_emoji(owned_weight: float, faced_weight: float) -> str:
+    """Color for a player who is rostered on both sides at once.
+
+    Both weights must be positive - a player with zero real leverage on one
+    side isn't a live conflict on that side and shouldn't reach this function
+    (the caller resolves that case as a rocket before calling in).
+    """
+    ratio = owned_weight / (owned_weight + faced_weight)
+    for cutoff, emoji in _CONFLICT_SPECTRUM:
+        if ratio >= cutoff:
+            return emoji
+    return _CONFLICT_SPECTRUM[-1][1]  # pragma: no cover - ratio is always >= 0
+
 
 @dataclass
 class LeagueLine:
@@ -101,9 +135,36 @@ class PlayerRooting:
 
     @property
     def emoji(self) -> str:
-        return "☠️" if self.public_enemy else (
-            "⚖️" if self.is_conflicted and self.sweet_spot else self.category.emoji
-        )
+        """The one glyph that has to tell the whole story at a glance.
+
+        Priority: the game's single worst offender always gets the skull.
+        A player owned somewhere and faced nowhere has no downside at all -
+        🚀, no further nuance needed.
+
+        A player rostered on both sides is judged by LEVERAGE, not a raw
+        league count: how much real win-probability swing (weighted by league
+        stakes) is riding on him where we own him, versus where we face him.
+        If the leagues we face him in are blowouts he can't flip, that side
+        contributes ~$0 regardless of how many of them there are - so he still
+        reads 🚀, because there's genuinely nothing to fear. Flip it around and
+        the same logic applies: owning him in a league we've already locked up,
+        while facing him in one close game, reads as heavily against (🟥)
+        despite technically being "ours" somewhere too.
+        """
+        if self.public_enemy:
+            return "☠️"
+        if self.owned_lines and not self.faced_lines:
+            return "\U0001f680"  # 🚀 pure upside, structurally
+        if not self.owned_lines:
+            return self.category.emoji  # pure against: plain root-against red
+
+        faced_weight = sum(l.dollar_swing for l in self.faced_lines)
+        if faced_weight < _NO_LEVERAGE:
+            # Technically faced somewhere, but nothing real is riding on it
+            # there (a blowout he can't flip) - no real downside to rooting hard.
+            return "\U0001f680"
+        owned_weight = sum(l.dollar_swing for l in self.owned_lines)
+        return conflict_emoji(owned_weight, faced_weight)
 
     @property
     def dominant_line(self) -> Optional[LeagueLine]:

@@ -99,7 +99,7 @@ class LiveEvent:
         name = display_name(self.player).upper()
         d = self.delta
         if self.mixed:
-            return f"⚖️ {name} +{d:.1f} — mixed bag for us."
+            return f"{self.rooting.emoji} {name} +{d:.1f} — mixed bag for us."
         if self.ours:
             if d >= 12:
                 return f"🔥🔥 {name} WENT NUCLEAR! +{d:.1f}"
