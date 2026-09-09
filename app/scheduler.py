@@ -230,7 +230,7 @@ class Scheduler:
         tz = self.cfg.tz
         if not force and not is_sunday(tz, now=now):
             return None
-        target = parse_hhmm(self.cfg.morning_summary_time)
+        target = parse_hhmm(self.cfg.sunday_morning_time)
         if not force and not is_due(target, tz, now=now):
             return None
 

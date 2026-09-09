@@ -258,7 +258,7 @@ def cfg_with(**kw) -> AppConfig:
 
 def test_sunday_morning_tick_only_fires_on_sunday(db):
     early = et_game("early", 13, 0)
-    cfg = cfg_with(morning_summary_time="08:00")
+    cfg = cfg_with(sunday_morning_time="08:00")
     sched = Scheduler(cfg, analyzer=FakeAnalyzer([early]), notifier=ConsoleNotifier(), db=db)
     monday = (SUNDAY + timedelta(days=1)).replace(hour=8, tzinfo=LA)
     assert sched.sunday_morning_tick(now=monday) is None
@@ -275,7 +275,7 @@ def test_sunday_morning_tick_covers_both_windows(db):
     def build(ctx, g):
         return analyzer().analyze_game(Ctx([st], [g]), g)
 
-    cfg = cfg_with(morning_summary_time="08:00")
+    cfg = cfg_with(sunday_morning_time="08:00")
     notifier = ConsoleNotifier()
     sched = Scheduler(cfg, analyzer=FakeAnalyzer([early, late], build), notifier=notifier, db=db)
     now = SUNDAY.replace(hour=8, tzinfo=LA)
@@ -286,7 +286,7 @@ def test_sunday_morning_tick_covers_both_windows(db):
 
 def test_sunday_morning_tick_dedupes_by_date(db):
     early = et_game("early", 13, 0)
-    cfg = cfg_with(morning_summary_time="08:00")
+    cfg = cfg_with(sunday_morning_time="08:00")
     notifier = ConsoleNotifier()
     sched = Scheduler(cfg, analyzer=FakeAnalyzer([early]), notifier=notifier, db=db)
     now = SUNDAY.replace(hour=8, tzinfo=LA)
@@ -364,7 +364,7 @@ def test_sunday_morning_and_second_slate_and_kickoff_keys_never_collide(db):
     """Three independent dedupe keys for one Sunday: morning digest, second
     slate update, and the eventual real SNF kickoff push."""
     early = et_game("early", 13, 0)
-    cfg = cfg_with(morning_summary_time="08:00")
+    cfg = cfg_with(sunday_morning_time="08:00")
     notifier = ConsoleNotifier()
     sched = Scheduler(cfg, analyzer=FakeAnalyzer([early]), notifier=notifier, db=db)
     now = SUNDAY.replace(hour=8, tzinfo=LA)
@@ -374,3 +374,33 @@ def test_sunday_morning_and_second_slate_and_kickoff_keys_never_collide(db):
     assert db.was_sent(f"sunday-morning:{date_str}", 0, 0)
     assert not db.was_sent(f"sunday-second-slate:{date_str}", 0, 0)
     assert not db.was_sent("snf-game-id", 2026, 2)
+
+
+def test_sunday_morning_time_is_independent_of_the_weekday_morning_time(db):
+    """Setting morning_summary_time (for TNF/MNF) must not affect when the
+    Sunday digest fires - they're separate knobs."""
+    early = et_game("early", 13, 0)
+    cfg = cfg_with(morning_summary_time="08:00", sunday_morning_time="09:23")
+    sched = Scheduler(cfg, analyzer=FakeAnalyzer([early]), notifier=ConsoleNotifier(), db=db)
+
+    at_the_weekday_time = SUNDAY.replace(hour=8, minute=0, tzinfo=LA)
+    assert sched.sunday_morning_tick(now=at_the_weekday_time) is None, \
+        "must not fire at morning_summary_time - only at sunday_morning_time"
+
+    at_its_own_time = SUNDAY.replace(hour=9, minute=23, tzinfo=LA)
+    ok, _ = sched.sunday_morning_tick(now=at_its_own_time)
+    assert ok
+
+
+def test_sunday_morning_time_defaults_to_9_23_am():
+    from app.config import AppConfig
+    assert AppConfig().sunday_morning_time == "09:23"
+
+
+def test_sunday_morning_time_round_trips_through_config_json(tmp_path):
+    from app.config import AppConfig
+
+    cfg = AppConfig(season=2026, sunday_morning_time="09:23")
+    path = cfg.save(tmp_path / "config.json")
+    loaded = AppConfig.load(path)
+    assert loaded.sunday_morning_time == "09:23"

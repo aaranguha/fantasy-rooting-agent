@@ -86,5 +86,6 @@
       "dynamic_importance": true,
       "low_priority": false
     }
-  ]
+  ],
+  "sunday_morning_time": "09:23"
 }

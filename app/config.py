@@ -137,6 +137,10 @@ class AppConfig:
     #: disable it entirely; the T-minus-kickoff push is unaffected either way.
     morning_summary: bool = True
     morning_summary_time: str = "09:00"
+    #: Separate time for the Sunday early+late slate digest - Sunday has its
+    #: own condensed morning coverage (see sunday_slate.py) rather than a
+    #: per-game SNF preview, so it gets its own configurable time.
+    sunday_morning_time: str = "09:23"
 
     # -- derived ------------------------------------------------------------
     @property
@@ -169,6 +173,7 @@ class AppConfig:
             "include_slots": self.include_slots,
             "morning_summary": self.morning_summary,
             "morning_summary_time": self.morning_summary_time,
+            "sunday_morning_time": self.sunday_morning_time,
             "leagues": [l.__dict__ for l in self.leagues],
         }
 
@@ -204,6 +209,7 @@ class AppConfig:
             cfg.include_slots = d["include_slots"]
         cfg.morning_summary = bool(d.get("morning_summary", True))
         cfg.morning_summary_time = d.get("morning_summary_time", "09:00")
+        cfg.sunday_morning_time = d.get("sunday_morning_time", "09:23")
         # Environment always wins for runtime knobs, so launchd can override.
         cfg.timezone = os.getenv("TIMEZONE") or cfg.timezone
         if os.getenv("NOTIFICATION_MINUTES_BEFORE"):
@@ -211,6 +217,8 @@ class AppConfig:
         cfg.notifier = os.getenv("NOTIFIER") or cfg.notifier
         if os.getenv("MORNING_SUMMARY_TIME"):
             cfg.morning_summary_time = os.environ["MORNING_SUMMARY_TIME"]
+        if os.getenv("SUNDAY_MORNING_TIME"):
+            cfg.sunday_morning_time = os.environ["SUNDAY_MORNING_TIME"]
         if os.getenv("MORNING_SUMMARY") is not None:
             cfg.morning_summary = os.environ["MORNING_SUMMARY"].strip().lower() not in (
                 "0", "false", "no", "")
