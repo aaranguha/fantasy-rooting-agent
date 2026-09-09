@@ -1,0 +1,28 @@
+# secrets / local state
+.env
+.env.local
+config.json
+*.sqlite
+*.sqlite3
+*.db
+cache/
+.fantasy-agent/
+
+# CI state (state/) is the exception: agent.sqlite (dedupe/live-snapshot state)
+# and config.json (league ids/buy-ins - not a secret) are tracked on purpose so
+# the GitHub Actions workflow has somewhere to persist state between runs.
+# state/.env would still be a real secret if it ever existed - it never should,
+# since the workflow writes .env at the repo root, not inside state/.
+!state/
+!state/agent.sqlite
+!state/config.json
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.DS_Store

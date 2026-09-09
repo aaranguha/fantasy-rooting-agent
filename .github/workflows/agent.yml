@@ -1,0 +1,64 @@
+name: Fantasy Rooting Agent
+
+# Runs the whole notification pipeline every 5 minutes - GitHub's shortest
+# allowed cron interval. That's plenty of resolution: the app's own logic has
+# a 12-minute grace window around kickoff and a 3-hour one for the morning
+# preview, so a 5-minute cadence never misses a window.
+#
+# Nothing here needs your Mac. ESPN, Sleeper and Telegram are all reached over
+# the internet from GitHub's runners; the only thing this can't do is iMessage
+# (no macOS runner, no Messages.app) - which is exactly why Telegram/ntfy exist.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}   # lets you click "Run workflow" in the GitHub UI to test
+
+# Never let two runs race on the same state; queue instead of overlapping.
+concurrency:
+  group: fantasy-agent
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # so the job can commit the updated SQLite state back
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install -e .
+
+      - name: Write secrets to .env (never committed)
+        run: |
+          cat > .env <<EOF
+          ESPN_S2=${{ secrets.ESPN_S2 }}
+          ESPN_SWID=${{ secrets.ESPN_SWID }}
+          NOTIFIER=telegram
+          TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
+          NTFY_SERVER=${{ secrets.NTFY_SERVER }}
+          NTFY_TOPIC=${{ secrets.NTFY_TOPIC }}
+          FANTASY_AGENT_HOME=${{ github.workspace }}/state
+          TZ=America/Los_Angeles
+          EOF
+
+      - name: Morning preview, kickoff push, live updates
+        run: |
+          fantasy-agent morning   || echo "morning: nothing due"
+          fantasy-agent run-once  || echo "run-once: nothing due"
+          fantasy-agent live --once || echo "live: nothing due"
+
+      - name: Persist dedupe / snapshot state
+        run: |
+          git config user.name "fantasy-agent-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add state/agent.sqlite
+          git diff --cached --quiet && echo "no state change" || \
+            git commit -m "state: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push
