@@ -8,7 +8,15 @@ name: Fantasy Rooting Agent
 # Nothing here needs your Mac. ESPN, Sleeper and Telegram are all reached over
 # the internet from GitHub's runners; the only thing this can't do is iMessage
 # (no macOS runner, no Messages.app) - which is exactly why Telegram/ntfy exist.
+#
+# The `push` trigger below is what actually gets a schedule/workflow_dispatch-
+# only workflow reliably registered by GitHub right away - without it, a brand
+# new workflow can sit unindexed (invisible to `gh workflow list`, un-runnable
+# via `gh workflow run`) for an unpredictable stretch after its first push.
 on:
+  push:
+    branches: [master]
+    paths: [".github/workflows/agent.yml"]
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch: {}   # lets you click "Run workflow" in the GitHub UI to test
