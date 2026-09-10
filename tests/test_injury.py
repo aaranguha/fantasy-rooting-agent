@@ -13,7 +13,6 @@ import pytest
 from app.analysis import Analyzer
 from app.config import AppConfig, LeagueConfig
 from app.formatting import long_report, phone_message
-from app.live import Snapshot, detect_events, take_snapshot
 from app.models import PlayerGameState as GS
 from app.models import normalize_injury
 
@@ -131,38 +130,3 @@ def test_player_ruled_out_in_my_lineup_is_a_loud_alert():
     assert msg.startswith("⚠️ LINEUP")
     assert "A.J. Brown" in msg and "OUT" in msg
     assert "LINEUP (bench now)" in long_report(guide)
-
-
-# -- live: mid-game "ruled out" -------------------------------------------
-
-def test_live_emits_a_ruled_out_event_when_status_flips():
-    target = player("A.J. Brown", "WR", "PHI")
-    lg = make_league("Turf Wars", 50)
-    game = make_game("DAL", "PHI", state=GS.IN_PROGRESS)
-
-    before_state = make_state(lg, my_players=[(target, 15.0, 3.0, GS.IN_PROGRESS)]
-                              + finished("m", 8, 12), opp_players=finished("t", 9, 12))
-    before = take_snapshot([before_state], game)
-    assert before.injuries[target.key] == ""
-
-    after_state = make_state(lg, my_players=[(target, 15.0, 3.0, GS.IN_PROGRESS, "OUT")]
-                             + finished("m", 8, 12), opp_players=finished("t", 9, 12))
-    guide = analyzer().analyze_game(Ctx([after_state], [game]), game)
-    events = detect_events(before, guide, [after_state], game)
-
-    assert len(events) == 1
-    ev = events[0]
-    assert ev.injury == "OUT"
-    assert "RULED OUT" in ev.reaction()
-    assert "day as over" in ev.instruction()
-
-
-def test_live_does_not_re_alert_an_already_out_player():
-    target = player("A.J. Brown", "WR", "PHI")
-    lg = make_league("Turf Wars", 50)
-    game = make_game("DAL", "PHI", state=GS.IN_PROGRESS)
-    out_state = make_state(lg, my_players=[(target, 15.0, 3.0, GS.IN_PROGRESS, "OUT")]
-                           + finished("m", 8, 12), opp_players=finished("t", 9, 12))
-    before = take_snapshot([out_state], game)
-    guide = analyzer().analyze_game(Ctx([out_state], [game]), game)
-    assert detect_events(before, guide, [out_state], game) == []

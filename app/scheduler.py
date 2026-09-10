@@ -18,6 +18,8 @@ from .analysis import Analyzer, GameGuide
 from .config import AppConfig
 from .db.database import Database
 from .formatting import phone_message, phone_title
+from .injuries import advance as advance_injuries
+from .injuries import injury_message, injury_title
 from .live import (
     DEFAULT_THRESHOLD, Snapshot, detect_events, live_message, live_title, take_snapshot,
 )
@@ -171,6 +173,65 @@ class Scheduler:
                 out.append((game, len(events)))
             else:
                 log.warning("Live update failed for %s; will retry: %s",
+                            game.matchup, result.detail)
+        return out
+
+    # -- in-game injury tracking ------------------------------------------------
+    def injury_tick(self, *, week: Optional[int] = None,
+                    ctx=None) -> list[tuple[NFLGame, int]]:
+        """Poll every in-progress game that has a starter of ours (or an
+        opponent's) and alert on real injury transitions - hurt, back, ruled out.
+
+        Uses its own snapshot slot per game (`<id>:inj`) and its own debounced
+        state machine, independent of the score-jump live updates.
+        """
+        season, wk, _ = self.analyzer.resolve_week(week)
+        ctx = ctx or self.analyzer.load_week(wk, refresh=True)
+        live = [g for g in ctx.games if g.state == PlayerGameState.IN_PROGRESS]
+
+        out: list[tuple[NFLGame, int]] = []
+        for game in live:
+            tracked: dict[str, object] = {}
+            for state in ctx.ok_states:
+                for exp in state.all_starters():
+                    if exp.canonical.nfl_team in game.teams:
+                        tracked[exp.canonical.key] = exp.canonical
+            if not tracked:
+                continue
+
+            reports_raw = self.analyzer.nfl.game_injuries(game.id)
+            reports: dict[str, object] = {}
+            for r in reports_raw:
+                player = None
+                if r.espn_id.isdigit():
+                    player = ctx.registry.by_espn_id(int(r.espn_id))
+                if player is None and r.name:
+                    player = ctx.registry.resolve(name=r.name, team=r.team)
+                if player is not None and player.key in tracked:
+                    reports[player.key] = r
+
+            key = f"{game.id}:inj"
+            prior = self.db.get_snapshot(key, season, wk) or {}
+            guide = self.analyzer.analyze_game(ctx, game)
+            rooting = {p.player.key: p for p in guide.players}
+
+            new_state, updates = advance_injuries(
+                prior, reports, players=tracked, rooting=rooting)
+
+            if not updates:
+                self.db.save_snapshot(key, new_state, season, wk)
+                continue
+
+            title = injury_title(game, updates)
+            body = injury_message(updates)
+            result = self.notifier.send(title, body)
+            self.db.log_send(f"{game.id}:injury", result.provider, result.ok,
+                             result.attempts, result.detail)
+            if result.ok:
+                self.db.save_snapshot(key, new_state, season, wk)
+                out.append((game, len(updates)))
+            else:
+                log.warning("Injury update failed for %s; will retry: %s",
                             game.matchup, result.detail)
         return out
 
@@ -419,6 +480,11 @@ class Scheduler:
                         log.info("Live update sent for %s (%d event(s))", game.matchup, n)
                 except Exception:  # noqa: BLE001
                     log.exception("Live tick blew up; continuing")
+                try:
+                    for game, n in self.injury_tick():
+                        log.info("Injury update sent for %s (%d change(s))", game.matchup, n)
+                except Exception:  # noqa: BLE001
+                    log.exception("Injury tick blew up; continuing")
             time.sleep(poll_seconds)
 
 

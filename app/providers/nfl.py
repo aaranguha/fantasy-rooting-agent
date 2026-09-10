@@ -21,6 +21,7 @@ from .base import HttpClient, ProviderError
 log = logging.getLogger(__name__)
 
 SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
+SUMMARY = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/summary"
 EASTERN = ZoneInfo("America/New_York")
 
 # Networks that only ever carry standalone national windows.
@@ -61,6 +62,44 @@ class NFLScheduleProvider:
         classify_slots(games)
         games.sort(key=lambda g: g.kickoff)
         return games
+
+    def game_injuries(self, game_id: str, *, cache_ttl: float = 45) -> list["InjuryReport"]:
+        """Live injury rows for one game, straight from ESPN's `summary` feed.
+
+        Returns a list of provider-agnostic `InjuryReport`s (unresolved - the
+        caller matches each `espn_id`/name to a canonical player). Empty on any
+        fetch or shape problem: a missing injury feed must never break a tick.
+        """
+        from ..injuries import InjuryReport, classify
+
+        try:
+            data = self.http.get(SUMMARY, params={"event": game_id}, cache_ttl=cache_ttl)
+        except ProviderError as exc:
+            log.warning("Injury feed unavailable for game %s: %s", game_id, exc)
+            return []
+
+        reports: list[InjuryReport] = []
+        for team_block in (data.get("injuries") or []):
+            team = normalize_team((team_block.get("team") or {}).get("abbreviation"))
+            for row in (team_block.get("injuries") or []):
+                athlete = row.get("athlete") or {}
+                status = str(row.get("status") or "")
+                rtype = row.get("type") or {}
+                note = str(rtype.get("description") or rtype.get("name") or "")
+                for extra in ("shortComment", "longComment"):
+                    if row.get(extra):
+                        note = f"{note} {row[extra]}".strip()
+                        break
+                detail = str((row.get("details") or {}).get("type") or "")
+                reports.append(InjuryReport(
+                    espn_id=str(athlete.get("id") or ""),
+                    name=str(athlete.get("displayName") or athlete.get("fullName") or ""),
+                    team=team,
+                    phase=classify(status, note),
+                    detail=detail,
+                    note=note.strip(),
+                ))
+        return reports
 
     def _parse_event(self, e: dict, season: int, week: int, stype: int) -> Optional[NFLGame]:
         try:

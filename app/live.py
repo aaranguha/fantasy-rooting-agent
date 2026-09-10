@@ -20,7 +20,7 @@ from typing import Any, Iterable, Optional
 from .analysis import GameGuide
 from .formatting import display_name, slot_word
 from .leverage import compute_leverage
-from .models import SIDELINED, MatchupState, NFLGame, Side
+from .models import MatchupState, NFLGame, Side
 from .rooting import PlayerRooting
 
 log = logging.getLogger(__name__)
@@ -38,18 +38,15 @@ class Snapshot:
 
     points: dict[str, float] = field(default_factory=dict)     # "league|player" -> pts
     win_prob: dict[str, float] = field(default_factory=dict)   # league id -> P(win)
-    injuries: dict[str, str] = field(default_factory=dict)     # player key -> status
 
     def to_dict(self) -> dict[str, Any]:
-        return {"points": self.points, "win_prob": self.win_prob,
-                "injuries": self.injuries}
+        return {"points": self.points, "win_prob": self.win_prob}
 
     @classmethod
     def from_dict(cls, d: Optional[dict]) -> "Snapshot":
         d = d or {}
         return cls(points=dict(d.get("points") or {}),
-                   win_prob=dict(d.get("win_prob") or {}),
-                   injuries=dict(d.get("injuries") or {}))
+                   win_prob=dict(d.get("win_prob") or {}))
 
     @property
     def is_empty(self) -> bool:
@@ -65,7 +62,6 @@ def take_snapshot(states: Iterable[MatchupState], game: NFLGame) -> Snapshot:
             if exp.canonical.nfl_team not in game.teams:
                 continue
             snap.points[f"{state.league.id}|{exp.canonical.key}"] = exp.current_points
-            snap.injuries[exp.canonical.key] = exp.injury_status
             touched = True
         if touched:
             snap.win_prob[state.league.id] = compute_leverage(state).win_prob
@@ -80,7 +76,6 @@ class LiveEvent:
     delta: float                       # biggest per-league jump, for headline use
     new_points: float
     per_league: dict[str, float] = field(default_factory=dict)   # league id -> delta
-    injury: str = ""                   # set when this event is a "ruled out" alert
 
     @property
     def player(self):
@@ -103,12 +98,6 @@ class LiveEvent:
         """The gut-response line. Deterministic: picked by size and by side."""
         name = display_name(self.player).upper()
         d = self.delta
-        if self.injury:
-            verb = {"OUT": "RULED OUT", "IR": "RULED OUT (IR)",
-                    "PUP": "OUT (PUP)", "SUSP": "SUSPENDED"}.get(self.injury, self.injury)
-            if self.theirs:
-                return f"🩹 {name} {verb} — that's good for us."
-            return f"🚑 {name} {verb} — his day is done. Rough for us."
         if self.mixed:
             return f"{self.rooting.emoji} {name} +{d:.1f} — mixed bag for us."
         if self.ours:
@@ -126,12 +115,6 @@ class LiveEvent:
     def instruction(self) -> str:
         """What to want from here, recomputed on post-play data."""
         r = self.rooting
-        if self.injury:
-            owned = ", ".join(sorted({l.league.name for l in r.owned_lines}))
-            if owned:
-                return (f"Treat his day as over. He's in your lineup in {owned} — "
-                        f"nothing to do now, but you're down a starter there.")
-            return "Treat his day as over — the rest is upside for us."
         owned = [l for l in r.lines if l.mine and l.threshold.feasible]
         faced = [l for l in r.lines if not l.mine and l.threshold.feasible]
 
@@ -182,7 +165,6 @@ def detect_events(before: Snapshot, guide: GameGuide, states: Iterable[MatchupSt
     by_key = {p.player.key: p for p in guide.players}
     deltas: dict[str, dict[str, float]] = {}
     totals: dict[str, float] = {}
-    newly_out: dict[str, str] = {}     # player key -> new sidelined status
 
     for state in states:
         for exp in state.all_starters():
@@ -190,9 +172,6 @@ def detect_events(before: Snapshot, guide: GameGuide, states: Iterable[MatchupSt
                 continue
             key = f"{state.league.id}|{exp.canonical.key}"
             was = before.points.get(key)
-            if exp.injury_status in SIDELINED \
-                    and before.injuries.get(exp.canonical.key, "") not in SIDELINED:
-                newly_out[exp.canonical.key] = exp.injury_status
             if was is None:
                 continue          # player entered the lineup after the snapshot
             delta = round(exp.current_points - was, 2)
@@ -202,18 +181,15 @@ def detect_events(before: Snapshot, guide: GameGuide, states: Iterable[MatchupSt
                                                 exp.current_points)
 
     events = []
-    for player_key in {*deltas, *newly_out}:
+    for player_key, per_league in deltas.items():
         rooting = by_key.get(player_key)
         if rooting is None:
             continue
-        per_league = deltas.get(player_key, {})
-        events.append(LiveEvent(rooting=rooting,
-                                delta=max(per_league.values()) if per_league else 0.0,
+        events.append(LiveEvent(rooting=rooting, delta=max(per_league.values()),
                                 new_points=totals.get(player_key, 0.0),
-                                per_league=per_league,
-                                injury=newly_out.get(player_key, "")))
-    # A "ruled out" always leads; then biggest swing in real stakes.
-    events.sort(key=lambda e: -(e.rooting.dollar_swing + e.delta + (100 if e.injury else 0)))
+                                per_league=per_league))
+    # Biggest swing in real stakes first.
+    events.sort(key=lambda e: -(e.rooting.dollar_swing + e.delta))
     return events
 
 

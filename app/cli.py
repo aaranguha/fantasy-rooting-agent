@@ -751,6 +751,13 @@ def live_cmd(poll: int, once: bool, threshold: Optional[float], dry_run: bool,
             except ProviderError as exc:
                 console.print(f"[yellow]fetch failed, will retry: {exc}[/]")
                 results = []
+            try:
+                injuries = sched.injury_tick(week=week)
+            except ProviderError as exc:
+                console.print(f"[yellow]injury fetch failed, will retry: {exc}[/]")
+                injuries = []
+            for game, n in injuries:
+                console.print(f"[green]🚑 sent {n} injury update(s) for {game.matchup}[/]")
             if results:
                 for game, n in results:
                     console.print(f"[green]✓ sent {n} update(s) for {game.matchup}[/]")
