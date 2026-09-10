@@ -15,7 +15,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 
 from .analysis import Analyzer, GameGuide
-from .config import AppConfig
+from .bluesky import (
+    COOLDOWN_MINUTES, MIN_SAMPLES, BlueskyClient, assess, bluesky_configured,
+    update_baseline,
+)
+from .config import AppConfig, cache_dir
 from .db.database import Database
 from .formatting import phone_message, phone_title
 from .injuries import advance as advance_injuries
@@ -26,7 +30,7 @@ from .live import (
 from .models import NFLGame, PlayerGameState, SlotType
 from .morning import games_today, is_due, parse_hhmm
 from .notifiers import Notifier, autoselect
-from .providers.base import ProviderError
+from .providers.base import HttpClient, ProviderError
 from .sunday_slate import (
     condensed_digest, earliest_kickoff, is_sunday, second_slate_title,
     slate_games, sunday_morning_title,
@@ -37,6 +41,10 @@ log = logging.getLogger(__name__)
 POLL_SECONDS = 30
 #: How late we will still fire if the machine was asleep at the exact moment.
 LATE_GRACE = timedelta(minutes=12)
+#: Off-day Bluesky sweeps of the whole roster run at most this often.
+BUZZ_SWEEP = timedelta(minutes=30)
+#: A game still counts as "hot" (chatter worth polling per-tick) this long after kickoff.
+BUZZ_HOT_AFTER_KICKOFF = timedelta(hours=4)
 
 
 @dataclass
@@ -233,6 +241,99 @@ class Scheduler:
             else:
                 log.warning("Injury update failed for %s; will retry: %s",
                             game.matchup, result.detail)
+        return out
+
+    # -- Bluesky "why is he trending" -----------------------------------------
+    def buzz_tick(self, *, week: Optional[int] = None, ctx=None) -> list[tuple]:
+        """Detect a spike in Bluesky chatter about one of our players and push a
+        one-line "here's why" (injury / big play / news / just trending).
+
+        Gameday: every tick, for players whose game is live or just finished.
+        Otherwise: a full-roster sweep, throttled to once per `BUZZ_SWEEP`.
+        """
+        if not self.cfg.bluesky_buzz or not bluesky_configured():
+            return []
+        season, wk, _ = self.analyzer.resolve_week(week)
+        ctx = ctx or self.analyzer.load_week(wk, refresh=True)
+        now = datetime.now(timezone.utc)
+
+        hot_teams: set[str] = set()
+        for g in ctx.games:
+            live = g.state == PlayerGameState.IN_PROGRESS
+            just_done = (g.state == PlayerGameState.FINAL
+                        and now - g.kickoff <= BUZZ_HOT_AFTER_KICKOFF)
+            if live or just_done:
+                hot_teams |= g.teams
+
+        starters: dict[str, object] = {}
+        for state in ctx.ok_states:
+            for exp in state.all_starters():
+                starters.setdefault(exp.canonical.key, exp.canonical)
+        if not starters:
+            return []
+
+        buzz = self.db.get_snapshot("buzz", season, wk) or {}
+        pstate: dict = buzz.get("players") or {}
+
+        if hot_teams:
+            check = {k: p for k, p in starters.items() if p.nfl_team in hot_teams}
+        else:
+            last = buzz.get("last_sweep")
+            if last and now - _iso(last) < BUZZ_SWEEP:
+                return []
+            buzz["last_sweep"] = now.isoformat()
+            check = dict(starters)
+        if not check:
+            self.db.save_snapshot("buzz", buzz, season, wk)
+            return []
+
+        client = BlueskyClient(HttpClient(cache_dir=cache_dir()), cache_dir=cache_dir())
+        fresh: list = []
+        for key, player in check.items():
+            ps = pstate.get(key) or {}
+            ema = float(ps.get("ema", 0.0))
+            samples = int(ps.get("samples", 0))
+            try:
+                res = assess(client, player, baseline=ema, now=now)
+            except Exception:  # noqa: BLE001 - one bad player must not kill the tick
+                log.exception("Bluesky assess failed for %s", player.name)
+                continue
+            pstate[key] = {
+                "ema": update_baseline(ema, samples, res.count),
+                "samples": samples + 1,
+                "last_alert_cat": ps.get("last_alert_cat", ""),
+                "last_alert_at": ps.get("last_alert_at", ""),
+            }
+            if samples < MIN_SAMPLES and not res.reporter_posts:
+                continue
+            if not res.is_spike:
+                continue
+            if (ps.get("last_alert_at") and ps.get("last_alert_cat") == res.category.value
+                    and now - _iso(ps["last_alert_at"]) < timedelta(minutes=COOLDOWN_MINUTES)):
+                continue
+            fresh.append((key, res))
+
+        buzz["players"] = pstate
+        if not fresh:
+            self.db.save_snapshot("buzz", buzz, season, wk)
+            return []
+
+        title = f"📈 Bluesky: {fresh[0][1].player.short_name}"
+        if len(fresh) > 1:
+            title += f" +{len(fresh) - 1} more"
+        body = "\n\n".join(f"{r.headline()}\n{r.body()}" for _, r in fresh)
+        result = self.notifier.send(title, body)
+        self.db.log_send("buzz:bluesky", result.provider, result.ok,
+                         result.attempts, result.detail)
+        out: list = []
+        if result.ok:
+            for key, res in fresh:
+                pstate[key]["last_alert_cat"] = res.category.value
+                pstate[key]["last_alert_at"] = now.isoformat()
+                out.append((res.player, res.category))
+        else:
+            log.warning("Bluesky buzz push failed; will retry: %s", result.detail)
+        self.db.save_snapshot("buzz", buzz, season, wk)
         return out
 
     # -- gameday-morning preview ----------------------------------------------
@@ -485,9 +586,23 @@ class Scheduler:
                         log.info("Injury update sent for %s (%d change(s))", game.matchup, n)
                 except Exception:  # noqa: BLE001
                     log.exception("Injury tick blew up; continuing")
+                try:
+                    for player, cat in self.buzz_tick():
+                        log.info("Bluesky buzz sent for %s (%s)", player.name, cat.value)
+                except Exception:  # noqa: BLE001
+                    log.exception("Buzz tick blew up; continuing")
             time.sleep(poll_seconds)
 
 
 def _primetime(games, include):
     from .providers.nfl import primetime_games
     return primetime_games(games, include)
+
+
+def _iso(value: str) -> datetime:
+    """Parse a stored ISO timestamp back to an aware UTC datetime."""
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return datetime.now(timezone.utc) - timedelta(days=1)
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)

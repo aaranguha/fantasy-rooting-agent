@@ -758,6 +758,11 @@ def live_cmd(poll: int, once: bool, threshold: Optional[float], dry_run: bool,
                 injuries = []
             for game, n in injuries:
                 console.print(f"[green]🚑 sent {n} injury update(s) for {game.matchup}[/]")
+            try:
+                for pl, cat in sched.buzz_tick(week=week):
+                    console.print(f"[green]📈 sent Bluesky buzz for {pl.name} ({cat.value})[/]")
+            except ProviderError as exc:
+                console.print(f"[yellow]buzz check failed, will retry: {exc}[/]")
             if results:
                 for game, n in results:
                     console.print(f"[green]✓ sent {n} update(s) for {game.matchup}[/]")
@@ -779,6 +784,52 @@ def live_cmd(poll: int, once: bool, threshold: Optional[float], dry_run: bool,
             time.sleep(poll)
     except KeyboardInterrupt:
         console.print("\nstopped")
+
+
+@cli.command("buzz")
+@click.argument("query", required=False)
+@click.option("--week", type=int, default=None)
+@click.option("--send", is_flag=True, help="Actually run the tick and push if something spikes")
+def buzz_cmd(query: Optional[str], week: Optional[int], send: bool) -> None:
+    """Show current Bluesky chatter for a player (or all your starters).
+
+    `fantasy-agent buzz "Puka Nacua"` inspects one player; with no name it
+    scans every starter. `--send` runs the real tick (baseline + dedupe + push).
+    """
+    from .bluesky import BlueskyClient, assess
+    from .providers.base import HttpClient
+    from .config import cache_dir
+
+    cfg = _cfg()
+    if send:
+        sched = Scheduler(cfg)
+        hits = sched.buzz_tick(week=week)
+        console.print(f"[green]{len(hits)} buzz alert(s) sent[/]" if hits
+                      else "[yellow]nothing spiking right now[/]")
+        return
+
+    from .bluesky import bluesky_configured
+    if not bluesky_configured():
+        console.print("[yellow]Set BLUESKY_HANDLE and BLUESKY_APP_PASSWORD to use this.[/]")
+        return
+    ctx = _load(cfg, week)
+    client = BlueskyClient(HttpClient(cache_dir=cache_dir()), cache_dir=cache_dir())
+    if query:
+        matches = ctx.registry.search(query, limit=1)
+        players = matches or []
+    else:
+        players = sorted({e.canonical for s in ctx.ok_states for e in s.all_starters()},
+                         key=lambda p: p.name)
+    if not players:
+        console.print(f"[red]no player matching {query!r}[/]")
+        return
+    for p in players:
+        res = assess(client, p, baseline=0.0)
+        flag = "[bold red]SPIKE[/]" if res.is_spike else ""
+        console.print(f"\n[bold]{p.name}[/] ({p.nfl_team}) — {res.count} posts / "
+                      f"{res.category.value} {flag}")
+        if res.top_post:
+            console.print(f"  [bright_black]{res.top_post.snippet(140)}[/]")
 
 
 @cli.command()

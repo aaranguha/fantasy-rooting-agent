@@ -141,6 +141,10 @@ class AppConfig:
     #: own condensed morning coverage (see sunday_slate.py) rather than a
     #: per-game SNF preview, so it gets its own configurable time.
     sunday_morning_time: str = "09:23"
+    #: Watch Bluesky for a sudden spike in chatter about one of your players
+    #: (injury / big play / trade-type news) and push a "here's why he's
+    #: trending" note. Uses the free unauthenticated search API.
+    bluesky_buzz: bool = True
 
     # -- derived ------------------------------------------------------------
     @property
@@ -174,6 +178,7 @@ class AppConfig:
             "morning_summary": self.morning_summary,
             "morning_summary_time": self.morning_summary_time,
             "sunday_morning_time": self.sunday_morning_time,
+            "bluesky_buzz": self.bluesky_buzz,
             "leagues": [l.__dict__ for l in self.leagues],
         }
 
@@ -210,6 +215,7 @@ class AppConfig:
         cfg.morning_summary = bool(d.get("morning_summary", True))
         cfg.morning_summary_time = d.get("morning_summary_time", "09:00")
         cfg.sunday_morning_time = d.get("sunday_morning_time", "09:23")
+        cfg.bluesky_buzz = bool(d.get("bluesky_buzz", True))
         # Environment always wins for runtime knobs, so launchd can override.
         cfg.timezone = os.getenv("TIMEZONE") or cfg.timezone
         if os.getenv("NOTIFICATION_MINUTES_BEFORE"):
@@ -221,6 +227,9 @@ class AppConfig:
             cfg.sunday_morning_time = os.environ["SUNDAY_MORNING_TIME"]
         if os.getenv("MORNING_SUMMARY") is not None:
             cfg.morning_summary = os.environ["MORNING_SUMMARY"].strip().lower() not in (
+                "0", "false", "no", "")
+        if os.getenv("BLUESKY_BUZZ") is not None:
+            cfg.bluesky_buzz = os.environ["BLUESKY_BUZZ"].strip().lower() not in (
                 "0", "false", "no", "")
         return cfg
 

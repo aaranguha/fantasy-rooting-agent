@@ -55,6 +55,8 @@ jobs:
           TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
           NTFY_SERVER=${{ secrets.NTFY_SERVER }}
           NTFY_TOPIC=${{ secrets.NTFY_TOPIC }}
+          BLUESKY_HANDLE=${{ secrets.BLUESKY_HANDLE }}
+          BLUESKY_APP_PASSWORD=${{ secrets.BLUESKY_APP_PASSWORD }}
           FANTASY_AGENT_HOME=${{ github.workspace }}/state
           TZ=America/Los_Angeles
           EOF
