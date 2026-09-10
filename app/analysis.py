@@ -72,6 +72,25 @@ class GameGuide:
                if p.lines and all(l.league.low_priority for l in p.lines)]
 
     @property
+    def footnote_relevant(self) -> list[PlayerRooting]:
+        """Starters we own or face whose matchup is so lopsided the leverage
+        model writes them off - dropped from every block above, but the user
+        still wants a name-level lean for them (grouped, not a full block).
+        Low-priority leagues are handled separately by `background_relevant`.
+        """
+        shown = set()
+        for grp in (self.foreground_relevant, self.background_relevant, self.conflicted):
+            shown.update(id(p) for p in grp)
+        return [p for p in self.players
+               if id(p) not in shown and p.has_stake
+               and any(not l.league.low_priority for l in p.lines)]
+
+    @property
+    def lineup_alerts(self) -> list[PlayerRooting]:
+        """Players ruled out who are still in one of my starting lineups."""
+        return [p for p in self.players if p.sidelined_in_my_lineup]
+
+    @property
     def money_at_stake(self) -> float:
         """Buy-ins of every league with a starter in this game."""
         leagues = {}

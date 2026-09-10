@@ -31,12 +31,13 @@ def make_league(name: str, buy_in: float, *, mult: float = 1.0,
 
 def exposure(league: League, p: CanonicalPlayer, side: Side, *, proj: float = 0.0,
              cur: float = 0.0, state: PlayerGameState = PlayerGameState.NOT_STARTED,
-             starter: bool = True, frac: float = 1.0) -> FantasyPlayerExposure:
+             starter: bool = True, frac: float = 1.0,
+             injury: str = "") -> FantasyPlayerExposure:
     return FantasyPlayerExposure(
         canonical=p, league=league, side=side,
         lineup_status=LineupStatus.STARTER if starter else LineupStatus.BENCH,
         slot="FLEX", current_points=cur, projected_points=proj,
-        game_state=state, game_fraction_remaining=frac,
+        game_state=state, game_fraction_remaining=frac, injury_status=injury,
     )
 
 
@@ -50,10 +51,12 @@ def make_state(
 ) -> MatchupState:
     """Each tuple is (CanonicalPlayer, projection, current, game_state)."""
     st = MatchupState(league=league, week=week, opponent_name=opponent)
-    for p, proj, cur, gs in my_players:
-        st.my_starters.append(exposure(league, p, Side.MINE, proj=proj, cur=cur, state=gs))
-    for p, proj, cur, gs in opp_players:
-        st.opp_starters.append(exposure(league, p, Side.OPPONENT, proj=proj, cur=cur, state=gs))
+    for p, proj, cur, gs, *rest in my_players:
+        st.my_starters.append(exposure(league, p, Side.MINE, proj=proj, cur=cur, state=gs,
+                                       injury=rest[0] if rest else ""))
+    for p, proj, cur, gs, *rest in opp_players:
+        st.opp_starters.append(exposure(league, p, Side.OPPONENT, proj=proj, cur=cur, state=gs,
+                                        injury=rest[0] if rest else ""))
     st.reported_score_mine = sum(e.current_points for e in st.my_starters)
     st.reported_score_opponent = sum(e.current_points for e in st.opp_starters)
     return st

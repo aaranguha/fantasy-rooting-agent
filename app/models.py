@@ -157,6 +157,35 @@ def normalize_name(name: Optional[str]) -> str:
     return "".join(parts)
 
 
+#: Injury / availability status, normalized across ESPN and Sleeper vocab.
+INJURY_ALIASES = {
+    "ACTIVE": "", "PROBABLE": "", "AVAILABLE": "",
+    "QUESTIONABLE": "Q", "Q": "Q", "DAY_TO_DAY": "Q", "DTD": "Q", "COV": "Q",
+    "DOUBTFUL": "DOUBT", "D": "DOUBT",
+    "OUT": "OUT", "O": "OUT", "NA": "OUT", "NFI": "OUT", "NON_FOOTBALL_INJURY": "OUT",
+    "INJURY_RESERVE": "IR", "IR": "IR", "IR_R": "IR",
+    "PUP": "PUP", "PHYSICALLY_UNABLE_TO_PERFORM": "PUP",
+    "SUSPENSION": "SUSP", "SUS": "SUSP", "SUSPENDED": "SUSP",
+}
+
+#: Statuses that mean "he is not playing" - i.e. worth an actionable alert.
+SIDELINED = {"OUT", "IR", "PUP", "SUSP"}
+
+#: Worst-first ranking, so the most severe status wins when a player is on
+#: several rosters with stale/fresh feeds disagreeing.
+INJURY_SEVERITY = {"": 0, "Q": 1, "DOUBT": 2, "SUSP": 3, "PUP": 4, "IR": 5, "OUT": 6}
+
+
+def normalize_injury(raw: Optional[str]) -> str:
+    """Collapse platform-specific injury spellings to a short common code."""
+    if not raw:
+        return ""
+    key = str(raw).strip().upper().replace("-", "_").replace(" ", "_")
+    if key in INJURY_ALIASES:
+        return INJURY_ALIASES[key]
+    return key[:5]
+
+
 def normalize_position(pos: Optional[str]) -> str:
     """Collapse platform-specific position spellings."""
     if not pos:
@@ -322,10 +351,20 @@ class FantasyPlayerExposure:
     game_state: PlayerGameState = PlayerGameState.BYE_OR_UNKNOWN
     game_fraction_remaining: float = 1.0  # 1.0 = kickoff pending, 0.0 = final
     has_projection: bool = True
+    injury_status: str = ""              # normalized: "", Q, DOUBT, OUT, IR, PUP, SUSP
 
     @property
     def is_starter(self) -> bool:
         return self.lineup_status == LineupStatus.STARTER
+
+    @property
+    def is_sidelined(self) -> bool:
+        """He is ruled out / not playing - actionable if he's in a lineup."""
+        return self.injury_status in SIDELINED
+
+    @property
+    def injury_tag(self) -> str:
+        return f" ({self.injury_status})" if self.injury_status else ""
 
     @property
     def expected_final(self) -> float:

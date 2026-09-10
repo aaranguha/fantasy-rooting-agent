@@ -15,7 +15,7 @@ from typing import Any, Optional
 from ..config import LeagueConfig, cache_dir
 from ..models import (
     DataTier, FantasyPlayerExposure, League, LineupStatus, MatchupState,
-    NFLGame, Platform, PlayerGameState, ScoringSettings,
+    NFLGame, Platform, PlayerGameState, ScoringSettings, normalize_injury,
 )
 from ..playerids import PlayerRegistry
 from ..standings import LeagueStandings, TeamRecord, apply_season_weight
@@ -25,6 +25,11 @@ log = logging.getLogger(__name__)
 
 API = "https://api.sleeper.app/v1"
 API2 = "https://api.sleeper.com"
+
+#: The full player dump is ~5 MB but it's the only place Sleeper publishes
+#: injury status. Refresh it far more often than the identity registry does
+#: (12 h) so a game-day "ruled out" is caught in time to fix a lineup.
+INJURY_TTL = 1800
 
 # Stat keys that appear in stat lines but are never scoring categories.
 NON_SCORING = {"gp", "gms_active", "gs", "off_snp", "def_snp", "st_snp", "tm_off_snp",
@@ -53,6 +58,23 @@ class SleeperProvider:
         self.http = client or HttpClient(cache_dir=cache_dir())
         self._proj_cache: dict[int, dict[str, dict]] = {}
         self._stat_cache: dict[int, dict[str, dict]] = {}
+        self._injury_cache: Optional[dict[str, str]] = None
+
+    # -- injuries ---------------------------------------------------------------
+    def injuries(self) -> dict[str, str]:
+        """sleeper_id -> normalized injury code, for every currently-flagged player."""
+        if self._injury_cache is None:
+            try:
+                raw = self.http.get(f"{API}/players/nfl", cache_ttl=INJURY_TTL) or {}
+            except ProviderError as exc:
+                log.warning("Sleeper injury feed unavailable: %s", exc)
+                raw = {}
+            self._injury_cache = {
+                str(pid): normalize_injury(p.get("injury_status"))
+                for pid, p in raw.items()
+                if isinstance(p, dict) and normalize_injury(p.get("injury_status"))
+            }
+        return self._injury_cache
 
     # -- discovery ----------------------------------------------------------
     def user_id(self, username: str) -> str:
@@ -249,6 +271,7 @@ class SleeperProvider:
         from ..models import Side
 
         side = Side.MINE if is_mine else Side.OPPONENT
+        injuries = self.injuries()
         starter_ids = [str(p) for p in (row.get("starters") or []) if p and str(p) != "0"]
         starter_pts = row.get("starters_points") or []
         all_pts = {str(k): float(v or 0) for k, v in (row.get("players_points") or {}).items()}
@@ -284,6 +307,7 @@ class SleeperProvider:
                 game_state=gstate,
                 game_fraction_remaining=frac,
                 has_projection=bool(raw_proj),
+                injury_status=injuries.get(pid, ""),
             )
             (starters if is_starter else bench).append(exp)
 

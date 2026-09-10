@@ -25,7 +25,8 @@ from typing import Any, Optional
 from ..config import LeagueConfig, cache_dir, espn_cookies
 from ..models import (
     DataTier, FantasyPlayerExposure, League, LineupStatus, MatchupState, NFLGame,
-    Platform, PlayerGameState, ScoringSettings, Side, normalize_team,
+    Platform, PlayerGameState, ScoringSettings, Side, normalize_injury,
+    normalize_team,
 )
 from ..playerids import ESPN_POSITIONS, PlayerRegistry, espn_dst_team_id
 from ..standings import LeagueStandings, TeamRecord, apply_season_weight
@@ -330,6 +331,7 @@ class ESPNProvider:
                 game_state=gstate,
                 game_fraction_remaining=frac,
                 has_projection=projected > 0,
+                injury_status=normalize_injury(p.get("injuryStatus")),
             )
             (starters if status == LineupStatus.STARTER else bench).append(exp)
 

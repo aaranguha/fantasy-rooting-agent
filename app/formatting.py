@@ -82,6 +82,11 @@ def want_phrase(p: PlayerRooting) -> str:
     owned = [l for l in p.lines if l.mine]
     faced = [l for l in p.lines if not l.mine]
 
+    # Ruled out: the only actionable instruction is bench him (where we own him)
+    # or nothing to do (faced only). The faced side never rescues an owned OUT.
+    if p.sidelined:
+        return f"{p.injury} — BENCH HIM" if owned else f"{p.injury} — good for us"
+
     # Ours everywhere and against us nowhere: there is no ceiling, so no
     # threshold is worth printing. More is strictly better.
     if owned and not faced:
@@ -120,12 +125,54 @@ def want_phrase(p: PlayerRooting) -> str:
     return "LOW STAKES"
 
 
+def _injury_mark(p: PlayerRooting) -> str:
+    """' (Q)' for a soft tag. Nothing when sidelined - the row's 🚑 emoji and
+    'OUT — BENCH HIM' instruction already carry it - and nothing when healthy."""
+    if p.sidelined:
+        return ""
+    return f" ({p.injury})" if p.injury else ""
+
+
+def _decided_footer(players: list[PlayerRooting]) -> str:
+    """One condensed block per league whose matchup is effectively over, still
+    naming which side each player is on so a lean survives even when the
+    leverage math has (correctly) stopped caring."""
+    by_leagues: dict[str, dict[str, list[str]]] = {}
+    for p in players:
+        key = ", ".join(sorted({l.league.name for l in p.lines}))
+        sides = by_leagues.setdefault(key, {"ours": [], "vs us": []})
+        name = display_name(p.player) + (f" ({p.injury})" if p.injury else "")
+        if p.owned_lines:
+            sides["ours"].append(name)
+        if p.faced_lines:
+            sides["vs us"].append(name)
+    out = []
+    for leagues, sides in by_leagues.items():
+        out.append(f"\U0001f4cb {leagues} (matchup near-decided)")
+        if sides["ours"]:
+            out.append(f"   lean ours: {', '.join(sides['ours'])}")
+        if sides["vs us"]:
+            out.append(f"   lean vs us: {', '.join(sides['vs us'])}")
+    return "\n".join(out)
+
+
+def _lineup_alert(players: list[PlayerRooting]) -> str:
+    """The one line that has to jump out: someone ruled out is still starting."""
+    if not players:
+        return ""
+    parts = []
+    for p in players:
+        lgs = ", ".join(sorted({l.league.name for l in p.owned_lines}))
+        parts.append(f"{display_name(p.player)} ({p.injury}) in {lgs}")
+    return "⚠️ LINEUP — bench now: " + "; ".join(parts)
+
+
 def _phone_player_block(p: PlayerRooting) -> str:
     """Three lines: what we want, where he's ours, where he's against us."""
     owned = [l for l in p.lines if l.mine]
     faced = [l for l in p.lines if not l.mine]
 
-    lines = [f"{p.emoji} {display_name(p.player)} · {want_phrase(p)}"]
+    lines = [f"{p.emoji} {display_name(p.player)}{_injury_mark(p)} · {want_phrase(p)}"]
     if owned:
         lines.append("   ours: " + ", ".join(
             _league_tag(l) for l in sorted(owned, key=lambda l: -l.dollar_swing)))
@@ -172,7 +219,9 @@ def phone_message(guide: GameGuide, now: Optional[datetime] = None) -> str:
     tracked never crowds out the ones that actually drive your night.
     """
     fg, bg = guide.foreground_relevant, guide.background_relevant
-    if not fg and not bg:
+    fn = guide.footnote_relevant
+    alert = _lineup_alert(guide.lineup_alerts)
+    if not fg and not bg and not fn and not alert:
         return "Nobody of ours starting, nobody against us. Neutral watch."
 
     blocks = [_phone_player_block(p) for p in fg[:MAX_PHONE_PLAYERS]]
@@ -182,12 +231,18 @@ def phone_message(guide: GameGuide, now: Optional[datetime] = None) -> str:
     tail = []
     if bg:
         tail.append(_background_footer(bg))
+    if fn:
+        tail.append(_decided_footer(fn))
     priority = _priority_line(guide)
     if priority:
         tail.append(f"\U0001f3af {priority}")
 
     def render(bs):
-        return "\n\n".join(bs) + ("\n\n" + "\n".join(tail) if tail else "")
+        parts = list(bs)
+        if tail:
+            parts.append("\n".join(tail))
+        core = "\n\n".join(parts)
+        return (alert + "\n\n" + core).strip() if alert else core
 
     body = render(blocks)
     while len(body) > PHONE_CHAR_BUDGET and len(blocks) > 2:
@@ -245,9 +300,10 @@ def long_report(guide: GameGuide, tz: Optional[ZoneInfo] = None,
     out.append("\nROOTING GUIDE")
     out.append("-" * 68)
     for p in guide.players:
-        if not p.matters and abs(p.score) < 1:
+        if not p.matters and abs(p.score) < 1 and not p.injury:
             continue
-        out.append(f"\n{p.headline()}   [score {p.score:+.1f} | ${p.dollar_swing:.0f} live "
+        inj = f" 🚑 {p.injury}" if p.sidelined else (f" ({p.injury})" if p.injury else "")
+        out.append(f"\n{p.headline()}{inj}   [score {p.score:+.1f} | ${p.dollar_swing:.0f} live "
                    f"| {p.best_confidence.value}]")
         for line in sorted(p.lines, key=lambda l: -l.dollar_swing):
             out.append(f"    {line.describe()}")
@@ -263,6 +319,14 @@ def long_report(guide: GameGuide, tz: Optional[ZoneInfo] = None,
             out.append(f"  {label}: " + ", ".join(
                 p.player.short_name + (f" ({p.range_phrase()})" if p.range_phrase() else "")
                 for p in group))
+    if guide.lineup_alerts:
+        out.append("  ⚠️ LINEUP (bench now): " + ", ".join(
+            f"{p.player.short_name} {p.injury}" for p in guide.lineup_alerts))
+    if guide.footnote_relevant:
+        out.append("  \U0001f4cb Near-decided leans: " + ", ".join(
+            f"{p.player.short_name} ({'ours' if p.owned_lines else 'vs us'})"
+            + (f" 🚑{p.injury}" if p.sidelined else "")
+            for p in guide.footnote_relevant))
     swing = guide.biggest_swing
     if swing:
         out.append(f"  \U0001f3af Biggest swing: {swing.player.name} (${swing.dollar_swing:.0f} live)")

@@ -11,7 +11,9 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from .leverage import MatchupLeverage
-from .models import CanonicalPlayer, Confidence, RootingCategory, Side
+from .models import (
+    INJURY_SEVERITY, SIDELINED, CanonicalPlayer, Confidence, RootingCategory, Side,
+)
 from .scenarios import ScenarioCurve
 from .thresholds import Threshold, compute_threshold
 
@@ -153,6 +155,8 @@ class PlayerRooting:
         """
         if self.public_enemy:
             return "☠️"
+        if self.sidelined:
+            return "🚑"     # availability trumps every rooting nuance
         if self.owned_lines and not self.faced_lines:
             return "\U0001f680"  # 🚀 pure upside, structurally
         if not self.owned_lines:
@@ -181,6 +185,27 @@ class PlayerRooting:
     @property
     def matters(self) -> bool:
         return abs(self.score) >= SLIGHT_FOR or (self.is_conflicted and self.dollar_swing >= 5)
+
+    @property
+    def has_stake(self) -> bool:
+        """He starts for us or against us somewhere - even if the matchup that
+        holds him is so lopsided the leverage math writes him off."""
+        return bool(self.lines)
+
+    @property
+    def injury(self) -> str:
+        """Worst injury status across every roster he's on (worst feed wins)."""
+        return max((ls.exposure.injury_status for ls in self.curve.leagues),
+                   key=lambda s: INJURY_SEVERITY.get(s, 0), default="")
+
+    @property
+    def sidelined(self) -> bool:
+        return self.injury in SIDELINED
+
+    @property
+    def sidelined_in_my_lineup(self) -> bool:
+        """He's ruled out AND still in one of my starting lineups - fix it."""
+        return self.sidelined and bool(self.owned_lines)
 
     # -- language -----------------------------------------------------------
     @property
