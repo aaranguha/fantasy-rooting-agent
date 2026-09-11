@@ -747,25 +747,23 @@ def live_cmd(poll: int, once: bool, threshold: Optional[float], dry_run: bool,
     try:
         while True:
             try:
-                results = sched.live_tick(threshold=thr, week=week)
+                # One shared pass: live plays + injuries + Bluesky buzz, merged
+                # into at most one push per game so they never pile up.
+                results = sched.updates_tick(threshold=thr, week=week)
             except ProviderError as exc:
                 console.print(f"[yellow]fetch failed, will retry: {exc}[/]")
                 results = []
             try:
-                injuries = sched.injury_tick(week=week)
+                for game, ok, detail in sched.recap_tick(week=week):
+                    style = "green" if ok else "red"
+                    label = "recap sent" if ok else "recap failed"
+                    console.print(f"[{style}]{label} for {game.matchup}: {detail}[/]")
             except ProviderError as exc:
-                console.print(f"[yellow]injury fetch failed, will retry: {exc}[/]")
-                injuries = []
-            for game, n in injuries:
-                console.print(f"[green]🚑 sent {n} injury update(s) for {game.matchup}[/]")
-            try:
-                for pl, cat in sched.buzz_tick(week=week):
-                    console.print(f"[green]📈 sent Bluesky buzz for {pl.name} ({cat.value})[/]")
-            except ProviderError as exc:
-                console.print(f"[yellow]buzz check failed, will retry: {exc}[/]")
+                console.print(f"[yellow]recap check failed, will retry: {exc}[/]")
             if results:
                 for game, n in results:
-                    console.print(f"[green]✓ sent {n} update(s) for {game.matchup}[/]")
+                    where = game.matchup if game else "roster news"
+                    console.print(f"[green]✓ sent {n} update(s) for {where}[/]")
             else:
                 an = Analyzer(cfg)
                 season, wk, stype = an.resolve_week(week)

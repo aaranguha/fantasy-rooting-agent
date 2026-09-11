@@ -21,7 +21,7 @@ from .bluesky import (
 )
 from .config import AppConfig, cache_dir
 from .db.database import Database
-from .formatting import phone_message, phone_title
+from .formatting import phone_message, phone_title, slot_word
 from .injuries import advance as advance_injuries
 from .injuries import injury_message, injury_title
 from .live import (
@@ -31,6 +31,8 @@ from .models import NFLGame, PlayerGameState, SlotType
 from .morning import games_today, is_due, parse_hhmm
 from .notifiers import Notifier, autoselect
 from .providers.base import HttpClient, ProviderError
+from .providers.nfl import team_game_index
+from .recap import recap_body, recap_title
 from .sunday_slate import (
     condensed_digest, earliest_kickoff, is_sunday, second_slate_title,
     slate_games, sunday_morning_title,
@@ -45,6 +47,39 @@ LATE_GRACE = timedelta(minutes=12)
 BUZZ_SWEEP = timedelta(minutes=30)
 #: A game still counts as "hot" (chatter worth polling per-tick) this long after kickoff.
 BUZZ_HOT_AFTER_KICKOFF = timedelta(hours=4)
+
+
+@dataclass
+class _LivePending:
+    """A game with score-jump events computed but not yet sent."""
+
+    game: NFLGame
+    events: list
+    before: Snapshot
+    now: Snapshot
+
+
+@dataclass
+class _InjuryPending:
+    """A game with injury transitions computed but not yet sent."""
+
+    game: NFLGame
+    updates: list
+    new_state: dict
+    key: str
+
+
+def _buzz_title(items: list[tuple[str, object]]) -> str:
+    names = [res.player.short_name for _, res in items]
+    if len(names) <= 3:
+        return "📈 Bluesky: " + " + ".join(names)
+    return "📈 Bluesky: " + " + ".join(names[:2]) + f" +{len(names) - 2} more"
+
+
+def _buzz_body(items: list[tuple[str, object]]) -> str:
+    # One line per player - what's actually happening, nothing else - so a
+    # multi-player spike reads as one tight update instead of N repeats.
+    return "\n".join(res.summary_line() for _, res in items)
 
 
 @dataclass
@@ -140,19 +175,15 @@ class Scheduler:
         self.db.clear_morning_push(game.id, season, week)
 
     # -- live in-game updates ----------------------------------------------
-    def live_tick(self, *, threshold: float = DEFAULT_THRESHOLD,
-                  week: Optional[int] = None) -> list[tuple[NFLGame, int]]:
-        """Poll in-progress primetime games and alert on real scoring jumps.
-
-        The snapshot is only advanced after a SUCCESSFUL send, so a failed push
-        is retried on the next pass rather than lost.
+    def _gather_live(self, ctx, season: int, wk: int,
+                     threshold: float) -> dict[str, _LivePending]:
+        """Compute score-jump events without sending or persisting anything
+        for a game that has some - a baseline-only game is fully handled here
+        (persisted immediately, since there's nothing to lose on a failed send).
         """
-        season, wk, stype = self.analyzer.resolve_week(week)
-        ctx = self.analyzer.load_week(wk, refresh=True)
+        out: dict[str, _LivePending] = {}
         live = [g for g in self.analyzer.primetime(ctx)
                 if g.state == PlayerGameState.IN_PROGRESS]
-
-        out: list[tuple[NFLGame, int]] = []
         for game in live:
             guide = self.analyzer.analyze_game(ctx, game)
             before = Snapshot.from_dict(self.db.get_snapshot(game.id, season, wk))
@@ -170,34 +201,43 @@ class Scheduler:
             if not events:
                 self.db.save_snapshot(game.id, now.to_dict(), season, wk)
                 continue
+            out[game.id] = _LivePending(game=game, events=events, before=before, now=now)
+        return out
 
-            title = live_title(game, events)
-            body = live_message(events, before, game)
+    def live_tick(self, *, threshold: float = DEFAULT_THRESHOLD,
+                  week: Optional[int] = None) -> list[tuple[NFLGame, int]]:
+        """Poll in-progress primetime games and alert on real scoring jumps.
+
+        The snapshot is only advanced after a SUCCESSFUL send, so a failed push
+        is retried on the next pass rather than lost. Standalone entry point -
+        `updates_tick()` is what actually runs in production, merging this with
+        injuries and Bluesky buzz into one push per game.
+        """
+        season, wk, _ = self.analyzer.resolve_week(week)
+        ctx = self.analyzer.load_week(wk, refresh=True)
+        pending = self._gather_live(ctx, season, wk, threshold)
+
+        out: list[tuple[NFLGame, int]] = []
+        for p in pending.values():
+            title = live_title(p.game, p.events)
+            body = live_message(p.events, p.before, p.game)
             result = self.notifier.send(title, body)
-            self.db.log_send(f"{game.id}:live", result.provider, result.ok,
+            self.db.log_send(f"{p.game.id}:live", result.provider, result.ok,
                              result.attempts, result.detail)
             if result.ok:
-                self.db.save_snapshot(game.id, now.to_dict(), season, wk)
-                out.append((game, len(events)))
+                self.db.save_snapshot(p.game.id, p.now.to_dict(), season, wk)
+                out.append((p.game, len(p.events)))
             else:
                 log.warning("Live update failed for %s; will retry: %s",
-                            game.matchup, result.detail)
+                            p.game.matchup, result.detail)
         return out
 
     # -- in-game injury tracking ------------------------------------------------
-    def injury_tick(self, *, week: Optional[int] = None,
-                    ctx=None) -> list[tuple[NFLGame, int]]:
-        """Poll every in-progress game that has a starter of ours (or an
-        opponent's) and alert on real injury transitions - hurt, back, ruled out.
-
-        Uses its own snapshot slot per game (`<id>:inj`) and its own debounced
-        state machine, independent of the score-jump live updates.
-        """
-        season, wk, _ = self.analyzer.resolve_week(week)
-        ctx = ctx or self.analyzer.load_week(wk, refresh=True)
+    def _gather_injuries(self, ctx, season: int, wk: int) -> dict[str, _InjuryPending]:
+        """Compute injury transitions without sending or persisting anything
+        for a game that has some (a no-change poll is persisted immediately)."""
+        out: dict[str, _InjuryPending] = {}
         live = [g for g in ctx.games if g.state == PlayerGameState.IN_PROGRESS]
-
-        out: list[tuple[NFLGame, int]] = []
         for game in live:
             tracked: dict[str, object] = {}
             for state in ctx.ok_states:
@@ -229,32 +269,44 @@ class Scheduler:
             if not updates:
                 self.db.save_snapshot(key, new_state, season, wk)
                 continue
+            out[game.id] = _InjuryPending(game=game, updates=updates,
+                                          new_state=new_state, key=key)
+        return out
 
-            title = injury_title(game, updates)
-            body = injury_message(updates)
+    def injury_tick(self, *, week: Optional[int] = None,
+                    ctx=None) -> list[tuple[NFLGame, int]]:
+        """Poll every in-progress game that has a starter of ours (or an
+        opponent's) and alert on real injury transitions - hurt, back, ruled out.
+
+        Standalone entry point - see `updates_tick()` for the merged version
+        that actually runs in production.
+        """
+        season, wk, _ = self.analyzer.resolve_week(week)
+        ctx = ctx or self.analyzer.load_week(wk, refresh=True)
+        pending = self._gather_injuries(ctx, season, wk)
+
+        out: list[tuple[NFLGame, int]] = []
+        for p in pending.values():
+            title = injury_title(p.game, p.updates)
+            body = injury_message(p.updates)
             result = self.notifier.send(title, body)
-            self.db.log_send(f"{game.id}:injury", result.provider, result.ok,
+            self.db.log_send(f"{p.game.id}:injury", result.provider, result.ok,
                              result.attempts, result.detail)
             if result.ok:
-                self.db.save_snapshot(key, new_state, season, wk)
-                out.append((game, len(updates)))
+                self.db.save_snapshot(p.key, p.new_state, season, wk)
+                out.append((p.game, len(p.updates)))
             else:
                 log.warning("Injury update failed for %s; will retry: %s",
-                            game.matchup, result.detail)
+                            p.game.matchup, result.detail)
         return out
 
     # -- Bluesky "why is he trending" -----------------------------------------
-    def buzz_tick(self, *, week: Optional[int] = None, ctx=None) -> list[tuple]:
-        """Detect a spike in Bluesky chatter about one of our players and push a
-        one-line "here's why" (injury / big play / news / just trending).
-
-        Gameday: every tick, for players whose game is live or just finished.
-        Otherwise: a full-roster sweep, throttled to once per `BUZZ_SWEEP`.
-        """
+    def _gather_buzz(self, ctx, season: int, wk: int) -> tuple[dict, list[tuple[str, object]]]:
+        """Compute this tick's spikes and the updated baselines (always safe to
+        persist), leaving the per-player `last_alert_*` cooldown markers for the
+        caller to set only once a send actually succeeds."""
         if not self.cfg.bluesky_buzz or not bluesky_configured():
-            return []
-        season, wk, _ = self.analyzer.resolve_week(week)
-        ctx = ctx or self.analyzer.load_week(wk, refresh=True)
+            return {}, []
         now = datetime.now(timezone.utc)
 
         hot_teams: set[str] = set()
@@ -270,7 +322,7 @@ class Scheduler:
             for exp in state.all_starters():
                 starters.setdefault(exp.canonical.key, exp.canonical)
         if not starters:
-            return []
+            return {}, []
 
         buzz = self.db.get_snapshot("buzz", season, wk) or {}
         pstate: dict = buzz.get("players") or {}
@@ -280,12 +332,12 @@ class Scheduler:
         else:
             last = buzz.get("last_sweep")
             if last and now - _iso(last) < BUZZ_SWEEP:
-                return []
+                return {}, []
             buzz["last_sweep"] = now.isoformat()
             check = dict(starters)
         if not check:
-            self.db.save_snapshot("buzz", buzz, season, wk)
-            return []
+            buzz["players"] = pstate
+            return buzz, []
 
         client = BlueskyClient(HttpClient(cache_dir=cache_dir()), cache_dir=cache_dir())
         fresh: list = []
@@ -314,31 +366,156 @@ class Scheduler:
             fresh.append((key, res))
 
         buzz["players"] = pstate
+        return buzz, fresh
+
+    def buzz_tick(self, *, week: Optional[int] = None, ctx=None) -> list[tuple]:
+        """Detect a spike in Bluesky chatter about one of our players and push a
+        one-line "here's why" (injury / big play / news / just trending).
+
+        Gameday: every tick, for players whose game is live or just finished.
+        Otherwise: a full-roster sweep, throttled to once per `BUZZ_SWEEP`.
+        Standalone entry point - see `updates_tick()` for the merged version.
+        """
+        season, wk, _ = self.analyzer.resolve_week(week)
+        ctx = ctx or self.analyzer.load_week(wk, refresh=True)
+        buzz, fresh = self._gather_buzz(ctx, season, wk)
+        if not buzz and not fresh:
+            return []
         if not fresh:
             self.db.save_snapshot("buzz", buzz, season, wk)
             return []
 
-        names = [res.player.short_name for _, res in fresh]
-        if len(names) <= 3:
-            title = "📈 Bluesky: " + " + ".join(names)
-        else:
-            title = "📈 Bluesky: " + " + ".join(names[:2]) + f" +{len(names) - 2} more"
-        # One line per player - what's actually happening, nothing else - so a
-        # multi-player spike reads as one tight update instead of N repeats.
-        body = "\n".join(res.summary_line() for _, res in fresh)
+        title, body = _buzz_title(fresh), _buzz_body(fresh)
         result = self.notifier.send(title, body)
         self.db.log_send("buzz:bluesky", result.provider, result.ok,
                          result.attempts, result.detail)
         out: list = []
         if result.ok:
+            now = datetime.now(timezone.utc).isoformat()
             for key, res in fresh:
-                pstate[key]["last_alert_cat"] = res.category.value
-                pstate[key]["last_alert_at"] = now.isoformat()
+                buzz["players"][key]["last_alert_cat"] = res.category.value
+                buzz["players"][key]["last_alert_at"] = now
                 out.append((res.player, res.category))
         else:
             log.warning("Bluesky buzz push failed; will retry: %s", result.detail)
         self.db.save_snapshot("buzz", buzz, season, wk)
         return out
+
+    # -- everything above, merged into one push per game ---------------------
+    def updates_tick(self, *, threshold: float = DEFAULT_THRESHOLD,
+                     week: Optional[int] = None) -> list[tuple[Optional[NFLGame], int]]:
+        """One shared pass across live score-jumps, injury transitions and
+        Bluesky buzz, sending AT MOST one message per game per tick.
+
+        Without this, a big play, an injury, and a Bluesky spike landing in the
+        same 5-minute window for the same game would fire as three separate
+        pushes back to back. This gathers all three first, then sends one
+        combined message per affected game (a pure Bluesky spike for a game
+        with nothing else going on still gets its own tight "📈 Bluesky: ..."
+        push, unchanged).
+        """
+        season, wk, _ = self.analyzer.resolve_week(week)
+        ctx = self.analyzer.load_week(wk, refresh=True)
+
+        live_pending = self._gather_live(ctx, season, wk, threshold)
+        injury_pending = self._gather_injuries(ctx, season, wk)
+        buzz_doc, buzz_fresh = self._gather_buzz(ctx, season, wk)
+
+        tidx = team_game_index(ctx.games)
+        buzz_by_game: dict[str, list[tuple[str, object]]] = {}
+        for key, res in buzz_fresh:
+            g = tidx.get(res.player.nfl_team)
+            buzz_by_game.setdefault(g.id if g else "unmatched", []).append((key, res))
+
+        games_by_id = {g.id: g for g in ctx.games}
+        out: list[tuple[NFLGame, int]] = []
+        for gid in set(live_pending) | set(injury_pending) | set(buzz_by_game):
+            live_p, inj_p = live_pending.get(gid), injury_pending.get(gid)
+            buzz_items = buzz_by_game.get(gid) or []
+            game = live_p.game if live_p else inj_p.game if inj_p else games_by_id.get(gid)
+            if game is None and gid != "unmatched":
+                continue
+
+            sections = []
+            if live_p:
+                sections.append(live_message(live_p.events, live_p.before, game))
+            if inj_p:
+                sections.append(injury_message(inj_p.updates))
+            if buzz_items:
+                sections.append(_buzz_body(buzz_items))
+            if not sections:
+                continue
+
+            if game is not None and (live_p or inj_p):
+                title = f"\U0001f3c8 {slot_word(game.slot)} · {game.matchup}"
+            else:
+                title = _buzz_title(buzz_items)
+            body = "\n\n".join(sections)
+
+            result = self.notifier.send(title, body)
+            self.db.log_send(f"{gid}:updates", result.provider, result.ok,
+                             result.attempts, result.detail)
+            count = (len(live_p.events) if live_p else 0) \
+                + (len(inj_p.updates) if inj_p else 0) + len(buzz_items)
+            if result.ok:
+                if live_p:
+                    self.db.save_snapshot(live_p.game.id, live_p.now.to_dict(), season, wk)
+                if inj_p:
+                    self.db.save_snapshot(inj_p.key, inj_p.new_state, season, wk)
+                if buzz_items:
+                    now_iso = datetime.now(timezone.utc).isoformat()
+                    for key, res in buzz_items:
+                        buzz_doc.setdefault("players", {}).setdefault(key, {})
+                        buzz_doc["players"][key]["last_alert_cat"] = res.category.value
+                        buzz_doc["players"][key]["last_alert_at"] = now_iso
+                out.append((game, count))
+            else:
+                log.warning("Combined update failed for %s; will retry: %s",
+                            game.matchup if game else gid, result.detail)
+
+        if buzz_doc:
+            self.db.save_snapshot("buzz", buzz_doc, season, wk)
+        return out
+
+    # -- post-game recap -------------------------------------------------------
+    def recap_tick(self, *, week: Optional[int] = None) -> list[tuple[NFLGame, bool, str]]:
+        """Once a TNF/SNF/MNF game goes FINAL, send a "how did tonight actually
+        go" recap - biggest swing, who smashed/busted their projection, where
+        each affected league stands now. Sent exactly once per game (the same
+        `sent_notifications` dedupe table the kickoff push uses, under a
+        `recap:<id>` key so it never collides with it).
+        """
+        try:
+            season, wk, stype = self.analyzer.resolve_week(week)
+            games = self.analyzer.nfl.games(season, wk, stype, cache_ttl=60)
+        except ProviderError as exc:
+            log.error("Could not load the NFL schedule for the recap: %s", exc)
+            return []
+
+        finals = [g for g in _primetime(games, self.cfg.include_slots)
+                 if g.state == PlayerGameState.FINAL
+                 and g.slot in (SlotType.TNF, SlotType.SNF, SlotType.MNF)]
+        finals = [g for g in finals if not self.db.was_sent(f"recap:{g.id}", season, wk)]
+        if not finals:
+            return []
+
+        ctx = self.analyzer.load_week(wk, refresh=True)
+        results: list[tuple[NFLGame, bool, str]] = []
+        for game in finals:
+            guide = self.analyzer.analyze_game(ctx, game)
+            if not guide.players:
+                continue  # nobody of ours or against us in this game - nothing to recap
+            title, body = recap_title(game), recap_body(guide)
+            key = f"recap:{game.id}"
+            result = self.notifier.send(title, body)
+            self.db.log_send(key, result.provider, result.ok, result.attempts, result.detail)
+            if result.ok and not result.dry_run:
+                self.db.mark_sent(game_id=key, season=season, week=wk,
+                                  slot=f"{game.slot.value}_RECAP", matchup=game.matchup,
+                                  kickoff_utc=game.kickoff.isoformat(),
+                                  provider=result.provider, body=body)
+            results.append((game, result.ok, result.detail))
+        return results
 
     # -- gameday-morning preview ----------------------------------------------
     def morning_tick(self, *, now: Optional[datetime] = None,
@@ -581,20 +758,17 @@ class Scheduler:
             if live and (time.monotonic() - last_live) >= live_every:
                 last_live = time.monotonic()
                 try:
-                    for game, n in self.live_tick():
-                        log.info("Live update sent for %s (%d event(s))", game.matchup, n)
+                    for game, n in self.updates_tick():
+                        log.info("Update sent for %s (%d item(s))",
+                                game.matchup if game else "roster news", n)
                 except Exception:  # noqa: BLE001
-                    log.exception("Live tick blew up; continuing")
+                    log.exception("Updates tick blew up; continuing")
                 try:
-                    for game, n in self.injury_tick():
-                        log.info("Injury update sent for %s (%d change(s))", game.matchup, n)
+                    for game, ok, detail in self.recap_tick():
+                        log.info("Recap for %s -> %s (%s)", game.matchup,
+                                "SENT" if ok else "FAILED", detail)
                 except Exception:  # noqa: BLE001
-                    log.exception("Injury tick blew up; continuing")
-                try:
-                    for player, cat in self.buzz_tick():
-                        log.info("Bluesky buzz sent for %s (%s)", player.name, cat.value)
-                except Exception:  # noqa: BLE001
-                    log.exception("Buzz tick blew up; continuing")
+                    log.exception("Recap tick blew up; continuing")
             time.sleep(poll_seconds)
 
 
