@@ -138,6 +138,29 @@ class Post:
         return t if len(t) <= limit else t[: limit - 1].rstrip() + "…"
 
 
+_SENT_SPLIT = re.compile(r"(?<=[.!?])\s+")
+
+
+def extract_relevant_sentence(text: str, player: CanonicalPlayer, *, limit: int = 180) -> str:
+    """Pull just the clause about THIS player out of a post that may ramble
+    through several unrelated notes (reporters often post a list of them).
+
+    A post's lines are treated as hard breaks first (list-style updates), each
+    further split on sentence punctuation; we keep the first clause that
+    actually names the player, so "Evans 3 first downs. Kittle is healthy."
+    yields only the Evans clause, not both.
+    """
+    last = (player.name.split() or [player.name])[-1].lower()
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()] or [text.strip()]
+    clauses = [c.strip() for ln in lines for c in _SENT_SPLIT.split(ln) if c.strip()]
+    hit = next((c for c in clauses if last in c.lower()), None)
+    chosen = hit or (clauses[0] if clauses else text.strip())
+    chosen = _WS.sub(" ", chosen).strip()
+    if len(chosen) > limit:
+        chosen = chosen[: limit - 1].rstrip() + "…"
+    return chosen
+
+
 @dataclass
 class BuzzResult:
     player: CanonicalPlayer
@@ -174,6 +197,20 @@ class BuzzResult:
         if self.category == BuzzCategory.INJURY:
             lines.append("Watching his game status now.")
         return "\n".join(lines)
+
+    def summary_line(self) -> str:
+        """One concise, accurate line: what's actually happening, not the
+        meta layer (attribution, repost counts, post-volume stats) around it.
+        Used for the push - `headline()`/`body()` stay around for anything
+        that wants the fuller form (the CLI inspector, tests)."""
+        quote = self._best_quote()
+        clause = extract_relevant_sentence(quote.text, self.player) if quote else ""
+        if not clause:
+            clause = f"{self.player.name} is trending, but no single post stands out."
+        last = (self.player.name.split() or [self.player.name])[-1].lower()
+        if last not in clause.lower():
+            clause = f"{self.player.name}: {clause}"
+        return f"{self.category.emoji} {clause}"
 
     def _best_quote(self) -> Optional[Post]:
         pool = self.reporter_posts or self.posts

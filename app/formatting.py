@@ -167,6 +167,25 @@ def _lineup_alert(players: list[PlayerRooting]) -> str:
     return "⚠️ LINEUP — bench now: " + "; ".join(parts)
 
 
+def _group_by_emoji(players: list[PlayerRooting]) -> list[PlayerRooting]:
+    """Cluster same-verdict players together instead of interleaving them.
+
+    Stable "group by first appearance": the significance ranking already
+    picked *which* players make the cut and in what priority, so within that
+    set we only reorder for display - every 🚀 together, then whichever emoji
+    shows up next, and so on - without needing an arbitrary category table.
+    """
+    buckets: dict[str, list[PlayerRooting]] = {}
+    order: list[str] = []
+    for p in players:
+        e = p.emoji
+        if e not in buckets:
+            buckets[e] = []
+            order.append(e)
+        buckets[e].append(p)
+    return [p for e in order for p in buckets[e]]
+
+
 def _phone_player_block(p: PlayerRooting) -> str:
     """Three lines: what we want, where he's ours, where he's against us."""
     owned = [l for l in p.lines if l.mine]
@@ -224,7 +243,10 @@ def phone_message(guide: GameGuide, now: Optional[datetime] = None) -> str:
     if not fg and not bg and not fn and not alert:
         return "Nobody of ours starting, nobody against us. Neutral watch."
 
-    blocks = [_phone_player_block(p) for p in fg[:MAX_PHONE_PLAYERS]]
+    # Significance order picks WHO makes the cut; display order then clusters
+    # same-verdict players together (see `_group_by_emoji`) rather than
+    # interleaving them by raw score.
+    selected = fg[:MAX_PHONE_PLAYERS]
 
     # Deliberately no money total here - the per-player league tags already say
     # what is at stake, and a dollar figure only adds arithmetic to a glance.
@@ -237,17 +259,17 @@ def phone_message(guide: GameGuide, now: Optional[datetime] = None) -> str:
     if priority:
         tail.append(f"\U0001f3af {priority}")
 
-    def render(bs):
-        parts = list(bs)
+    def render(players):
+        parts = [_phone_player_block(p) for p in _group_by_emoji(players)]
         if tail:
             parts.append("\n".join(tail))
         core = "\n\n".join(parts)
         return (alert + "\n\n" + core).strip() if alert else core
 
-    body = render(blocks)
-    while len(body) > PHONE_CHAR_BUDGET and len(blocks) > 2:
-        blocks.pop()
-        body = render(blocks)
+    body = render(selected)
+    while len(body) > PHONE_CHAR_BUDGET and len(selected) > 2:
+        selected.pop()      # drop the least significant (still in rank order)
+        body = render(selected)
     return body
 
 

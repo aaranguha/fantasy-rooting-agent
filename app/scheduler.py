@@ -318,10 +318,14 @@ class Scheduler:
             self.db.save_snapshot("buzz", buzz, season, wk)
             return []
 
-        title = f"📈 Bluesky: {fresh[0][1].player.short_name}"
-        if len(fresh) > 1:
-            title += f" +{len(fresh) - 1} more"
-        body = "\n\n".join(f"{r.headline()}\n{r.body()}" for _, r in fresh)
+        names = [res.player.short_name for _, res in fresh]
+        if len(names) <= 3:
+            title = "📈 Bluesky: " + " + ".join(names)
+        else:
+            title = "📈 Bluesky: " + " + ".join(names[:2]) + f" +{len(names) - 2} more"
+        # One line per player - what's actually happening, nothing else - so a
+        # multi-player spike reads as one tight update instead of N repeats.
+        body = "\n".join(res.summary_line() for _, res in fresh)
         result = self.notifier.send(title, body)
         self.db.log_send("buzz:bluesky", result.provider, result.ok,
                          result.attempts, result.detail)

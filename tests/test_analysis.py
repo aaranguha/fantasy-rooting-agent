@@ -355,3 +355,18 @@ def test_push_body_carries_no_dollar_figures():
     body = phone_message(build_guide())
     assert "$" not in body, body
     assert "Dynasty" in body and "Work" in body and "Family" in body
+
+
+def test_push_clusters_same_verdict_players_instead_of_interleaving():
+    """Readability follow-up: two 🚀 players separated by a differently-emoji'd
+    player in significance order must render back-to-back in the push, with
+    the interrupting player's whole group moved after."""
+    from app.formatting import _group_by_emoji
+
+    class Stub:
+        def __init__(self, name, emoji):
+            self.name, self.emoji = name, emoji
+
+    rocket_a, mid, rocket_b, low = Stub("A", "🚀"), Stub("M", "🟡"), Stub("B", "🚀"), Stub("L", "🔴")
+    grouped = _group_by_emoji([rocket_a, mid, rocket_b, low])
+    assert [p.name for p in grouped] == ["A", "B", "M", "L"]

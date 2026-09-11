@@ -9,8 +9,8 @@ import pytest
 
 from app.analysis import GameGuide
 from app.bluesky import (
-    BuzzCategory, BuzzResult, Post, assess, classify, gather, _parse_post,
-    _relevant, update_baseline,
+    BuzzCategory, BuzzResult, Post, assess, classify, extract_relevant_sentence,
+    gather, _parse_post, _relevant, update_baseline,
 )
 from app.config import AppConfig
 from app.models import CanonicalPlayer, League, Platform, ScoringSettings
@@ -72,6 +72,36 @@ def test_classify_returns_unclear_when_no_signal_or_a_tie():
     assert classify([_parse_post(_raw("Nacua is so good man"))]) == BuzzCategory.UNCLEAR
     tie = [_parse_post(_raw("Nacua touchdown but also looked like he tweaked his ankle"))]
     assert classify(tie) == BuzzCategory.UNCLEAR
+
+
+# -- extracting just the relevant clause ---------------------------
+
+def test_extract_pulls_only_the_players_clause_out_of_a_multi_topic_post():
+    text = ("Mike Evans 3 first downs on first drive. Kittle and CMC are healthy. "
+            "Bosa trucks McClendon on first snap. the offseason did not happen")
+    evans = CanonicalPlayer(key="p:evans", name="Mike Evans", position="WR", nfl_team="TB")
+    assert extract_relevant_sentence(text, evans) == "Mike Evans 3 first downs on first drive."
+
+def test_extract_falls_back_to_the_first_clause_if_no_direct_mention():
+    text = "Huge day so far - already three catches and a score"
+    p = CanonicalPlayer(key="p:x", name="Some Guy", position="WR", nfl_team="TB")
+    assert extract_relevant_sentence(text, p) == text
+
+def test_summary_line_is_just_the_clause_when_the_name_already_leads_it():
+    p = CanonicalPlayer(key="p:nacua", name="Puka Nacua", position="WR", nfl_team="LAR")
+    post = _parse_post(_raw("Puka Nacua 41-yard catch", name="NFL Daily News"))
+    r = BuzzResult(player=p, posts=[post], category=BuzzCategory.BIG_PLAY,
+                  count=13, baseline=3.0)
+    r.top_post = post
+    assert r.summary_line() == "🔥 Puka Nacua 41-yard catch"
+
+def test_summary_line_prefixes_the_name_when_the_clause_omits_it():
+    p = CanonicalPlayer(key="p:nacua", name="Puka Nacua", position="WR", nfl_team="LAR")
+    post = _parse_post(_raw("41-yard catch to open the second half"))
+    r = BuzzResult(player=p, posts=[post], category=BuzzCategory.BIG_PLAY,
+                  count=13, baseline=3.0)
+    r.top_post = post
+    assert r.summary_line() == "🔥 Puka Nacua: 41-yard catch to open the second half"
 
 
 # -- spike logic ----------------------------------------------------
@@ -192,10 +222,50 @@ def test_buzz_tick_sends_on_a_confirmed_spike(sched, monkeypatch):
 
     out = s.buzz_tick()
     assert len(out) == 1 and out[0][1] == BuzzCategory.INJURY
-    assert "blowing up on Bluesky" in rec.sent[0][1]
+    title, body = rec.sent[0]
+    assert title == "📈 Bluesky: P. Nacua"
+    assert body == "🚑 Nacua carted off"
 
     # Immediate re-run: cooldown suppresses a second identical alert.
     assert s.buzz_tick() == []
+
+
+KYREN = CanonicalPlayer(key="p:kyren", name="Kyren Williams", position="RB", nfl_team="LAR")
+
+
+def test_buzz_tick_combines_multiple_spikes_into_one_tight_push(tmp_path, monkeypatch):
+    from app.db.database import Database
+
+    monkeypatch.setenv("BLUESKY_HANDLE", "x.bsky.social")
+    monkeypatch.setenv("BLUESKY_APP_PASSWORD", "app-pass")
+    game = make_game("DAL", "LAR", state=GS.IN_PROGRESS)
+    ctx = _Ctx([_state_with(NACUA), _state_with(KYREN)], [game])
+    cfg = AppConfig(season=2026)
+    cfg.leagues = []
+    rec = Recorder()
+    s = Scheduler(cfg, analyzer=_Analyzer(ctx), notifier=rec,
+                  db=Database(tmp_path / "t.sqlite"))
+
+    results = {
+        NACUA.key: BuzzResult(
+            player=NACUA, posts=[_parse_post(_raw("Puka Nacua 41-yard catch", name="NFL Daily News"))],
+            category=BuzzCategory.BIG_PLAY, count=13, baseline=3.0),
+        KYREN.key: BuzzResult(
+            player=KYREN, posts=[_parse_post(_raw("Kyren Williams rushes in for a Rams touchdown"))],
+            category=BuzzCategory.BIG_PLAY, count=14, baseline=2.0),
+    }
+    for r in results.values():
+        r.top_post = r.posts[0]
+    monkeypatch.setattr("app.scheduler.assess",
+                        lambda client, player, baseline, now=None: results[player.key])
+    monkeypatch.setattr("app.scheduler.MIN_SAMPLES", 0)
+
+    out = s.buzz_tick()
+    assert len(out) == 2
+    title, body = rec.sent[0]
+    assert title == "📈 Bluesky: P. Nacua + K. Williams"
+    assert body == ("🔥 Puka Nacua 41-yard catch\n"
+                    "🔥 Kyren Williams rushes in for a Rams touchdown")
 
 
 def test_buzz_tick_is_a_noop_without_credentials(tmp_path, monkeypatch):
