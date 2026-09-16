@@ -1,0 +1,34 @@
+name: Test Notification
+
+# Manual-only: lets you send yourself a real test notification on demand
+# (e.g. to verify Telegram delivery) without needing the bot token locally.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install -e .
+
+      - name: Write secrets to .env (never committed)
+        run: |
+          cat > .env <<EOF
+          ESPN_S2=${{ secrets.ESPN_S2 }}
+          ESPN_SWID=${{ secrets.ESPN_SWID }}
+          NOTIFIER=telegram
+          TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
+          FANTASY_AGENT_HOME=${{ github.workspace }}/state
+          TZ=America/Los_Angeles
+          EOF
+
+      - name: Send real test notification
+        run: fantasy-agent test-notification --provider telegram --real
