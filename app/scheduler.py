@@ -16,7 +16,7 @@ from typing import Callable, Optional
 
 from .analysis import Analyzer, GameGuide
 from .bluesky import (
-    COOLDOWN_MINUTES, MIN_SAMPLES, BlueskyClient, assess, bluesky_configured,
+    COOLDOWN_MINUTES, MIN_SAMPLES, BlueskyClient, BuzzCategory, assess, bluesky_configured,
     update_baseline,
 )
 from .config import AppConfig, cache_dir
@@ -310,16 +310,21 @@ class Scheduler:
         now = datetime.now(timezone.utc)
 
         hot_teams: set[str] = set()
+        live_teams: set[str] = set()
         for g in ctx.games:
             live = g.state == PlayerGameState.IN_PROGRESS
             just_done = (g.state == PlayerGameState.FINAL
                         and now - g.kickoff <= BUZZ_HOT_AFTER_KICKOFF)
+            if live:
+                live_teams |= g.teams
             if live or just_done:
                 hot_teams |= g.teams
 
+        # Only our own starters - not opponents' - across all leagues. Buzz
+        # about a player nobody here rosters isn't actionable; it's just noise.
         starters: dict[str, object] = {}
         for state in ctx.ok_states:
-            for exp in state.all_starters():
+            for exp in state.my_starters:
                 starters.setdefault(exp.canonical.key, exp.canonical)
         if not starters:
             return {}, []
@@ -359,6 +364,14 @@ class Scheduler:
             if samples < MIN_SAMPLES and not res.reporter_posts:
                 continue
             if not res.is_spike:
+                continue
+            # Once a game's final, the recap already covers on-field production
+            # in full - re-announcing a big (or bad) outing as "trending" here
+            # is just a duplicate. Injury/news chatter can still be genuinely
+            # new information during the post-final grace window, so let those
+            # through.
+            on_field = (BuzzCategory.BIG_PLAY, BuzzCategory.BAD_PLAY, BuzzCategory.UNCLEAR)
+            if player.nfl_team not in live_teams and res.category in on_field:
                 continue
             if (ps.get("last_alert_at") and ps.get("last_alert_cat") == res.category.value
                     and now - _iso(ps["last_alert_at"]) < timedelta(minutes=COOLDOWN_MINUTES)):

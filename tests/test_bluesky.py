@@ -73,6 +73,26 @@ def test_classify_returns_unclear_when_no_signal_or_a_tie():
     tie = [_parse_post(_raw("Nacua touchdown but also looked like he tweaked his ankle"))]
     assert classify(tie) == BuzzCategory.UNCLEAR
 
+def test_classify_a_mocked_td_in_a_blowout_is_bad_play_not_big_play():
+    # Real case: Javonte Williams scores garbage-time TD while his team is
+    # getting blown out - action keywords fire, but the post is mocking him,
+    # not celebrating. Should not get a celebratory 🔥.
+    posts = [_parse_post(_raw(
+        "javonte williams taunting as he scores a td in a game the cowboys "
+        "are still down late in the 4th quarter is hilariously bad"))]
+    assert classify(posts) == BuzzCategory.BAD_PLAY
+
+def test_classify_sarcastic_fire_emoji_alone_is_not_big_play():
+    # Real case: a post used 🔥 sarcastically about a terrible outing. A bare
+    # fire emoji is too ambiguous (sincere hype vs. sarcasm) to trust on its
+    # own, so it shouldn't be a BIG_PLAY trigger by itself anymore.
+    posts = [_parse_post(_raw("🔥 Stunningly horrific Baker Mayfield start today"))]
+    assert classify(posts) != BuzzCategory.BIG_PLAY
+
+def test_classify_genuine_big_play_with_fire_emoji_still_counts():
+    posts = [_parse_post(_raw("NACUA 60 YARD TOUCHDOWN ARE YOU KIDDING 🔥🔥🔥"))]
+    assert classify(posts) == BuzzCategory.BIG_PLAY
+
 
 # -- extracting just the relevant clause ---------------------------
 
@@ -266,6 +286,76 @@ def test_buzz_tick_combines_multiple_spikes_into_one_tight_push(tmp_path, monkey
     assert title == "📈 Bluesky: P. Nacua + K. Williams"
     assert body == ("🔥 Puka Nacua 41-yard catch\n"
                     "🔥 Kyren Williams rushes in for a Rams touchdown")
+
+
+def _state_with_opponent(player_obj):
+    from app.models import FantasyPlayerExposure, LineupStatus, MatchupState
+    lg = League(id="L1", name="Turf Wars", platform=Platform.SLEEPER, buy_in_usd=50,
+                season=2026, scoring=ScoringSettings())
+    st = MatchupState(league=lg, week=5)
+    st.opp_starters.append(FantasyPlayerExposure(
+        canonical=player_obj, league=lg, side=Side.OPPONENT,
+        lineup_status=LineupStatus.STARTER, projected_points=14.0))
+    return st
+
+
+def test_buzz_tick_never_checks_an_opponents_starter(tmp_path, monkeypatch):
+    """We only care about our own players - an opponent's starter blowing up
+    on Bluesky isn't something we act on, so it should never even be checked."""
+    from app.db.database import Database
+
+    monkeypatch.setenv("BLUESKY_HANDLE", "x.bsky.social")
+    monkeypatch.setenv("BLUESKY_APP_PASSWORD", "app-pass")
+    game = make_game("DAL", "LAR", state=GS.IN_PROGRESS)
+    ctx = _Ctx([_state_with_opponent(NACUA)], [game])
+    cfg = AppConfig(season=2026)
+    cfg.leagues = []
+    rec = Recorder()
+    s = Scheduler(cfg, analyzer=_Analyzer(ctx), notifier=rec,
+                  db=Database(tmp_path / "t.sqlite"))
+
+    called = []
+    monkeypatch.setattr("app.scheduler.assess",
+                        lambda *a, **k: called.append(1) or (_ for _ in ()).throw(
+                            AssertionError("should never be called for an opponent-only player")))
+    monkeypatch.setattr("app.scheduler.MIN_SAMPLES", 0)
+
+    assert s.buzz_tick() == []
+    assert called == []
+
+
+def test_buzz_tick_suppresses_on_field_categories_once_the_game_is_final(tmp_path, monkeypatch):
+    """A big (or bad) play is fully covered by the post-game recap already;
+    re-announcing it as 'trending' after the game ends is just a duplicate.
+    Injury/news chatter in that same post-final window is still let through,
+    since it can be genuinely new information the recap doesn't have."""
+    from app.db.database import Database
+
+    monkeypatch.setenv("BLUESKY_HANDLE", "x.bsky.social")
+    monkeypatch.setenv("BLUESKY_APP_PASSWORD", "app-pass")
+    game = make_game("DAL", "LAR", state=GS.FINAL)  # final, not live
+    ctx = _Ctx([_state_with(NACUA)], [game])
+    cfg = AppConfig(season=2026)
+    cfg.leagues = []
+    rec = Recorder()
+    s = Scheduler(cfg, analyzer=_Analyzer(ctx), notifier=rec,
+                  db=Database(tmp_path / "t.sqlite"))
+
+    big_play = BuzzResult(
+        player=NACUA, posts=[_parse_post(_raw("Puka Nacua 41-yard catch"))],
+        category=BuzzCategory.BIG_PLAY, count=13, baseline=3.0)
+    big_play.top_post = big_play.posts[0]
+    monkeypatch.setattr("app.scheduler.assess", lambda *a, **k: big_play)
+    monkeypatch.setattr("app.scheduler.MIN_SAMPLES", 0)
+    assert s.buzz_tick() == []
+
+    injury = BuzzResult(
+        player=NACUA, posts=[_parse_post(_raw("Nacua carted off"))],
+        category=BuzzCategory.INJURY, count=45, baseline=3.0)
+    injury.top_post = injury.posts[0]
+    monkeypatch.setattr("app.scheduler.assess", lambda *a, **k: injury)
+    out = s.buzz_tick()
+    assert len(out) == 1 and out[0][1] == BuzzCategory.INJURY
 
 
 def test_buzz_tick_is_a_noop_without_credentials(tmp_path, monkeypatch):

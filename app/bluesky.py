@@ -56,17 +56,19 @@ COOLDOWN_MINUTES = 30
 class BuzzCategory(str, Enum):
     INJURY = "injury"
     BIG_PLAY = "big_play"
+    BAD_PLAY = "bad_play"
     NEWS = "news"
     UNCLEAR = "unclear"
 
     @property
     def label(self) -> str:
-        return {"injury": "INJURY", "big_play": "BIG PLAY", "news": "NEWS",
-                "unclear": "TRENDING"}[self.value]
+        return {"injury": "INJURY", "big_play": "BIG PLAY", "bad_play": "ROUGH OUTING",
+                "news": "NEWS", "unclear": "TRENDING"}[self.value]
 
     @property
     def emoji(self) -> str:
-        return {"injury": "🚑", "big_play": "🔥", "news": "📰", "unclear": "📈"}[self.value]
+        return {"injury": "🚑", "big_play": "🔥", "bad_play": "😬",
+                "news": "📰", "unclear": "📈"}[self.value]
 
 
 _KEYWORDS: dict[BuzzCategory, tuple[str, ...]] = {
@@ -84,7 +86,7 @@ _KEYWORDS: dict[BuzzCategory, tuple[str, ...]] = {
         "walk-in", "what a catch", "are you kidding", "unreal", "ridiculous catch",
         "one-handed", "hurdle", "truck", "trucked", "house call", "long touchdown",
         "explosive", "highlight", " yards", "yard td", "yard touchdown", "dime",
-        "wow", "🔥", "insane", "special",
+        "wow", "insane", "special",
     ),
     BuzzCategory.NEWS: (
         "traded", "trade", "acquired", "released", "waived", "cut ", "signed",
@@ -94,6 +96,21 @@ _KEYWORDS: dict[BuzzCategory, tuple[str, ...]] = {
         "contract", "extension", "fined", "arrested", "ejected", "deactivated",
     ),
 }
+
+#: A post can use touchdown/highlight-adjacent words while clearly mocking a bad
+#: performance ("scores a td in a game they're getting blown out - hilariously
+#: bad"). When these outweigh the action words, it's not something to celebrate,
+#: so BIG_PLAY gets reclassified to BAD_PLAY instead of flying a 🔥 over bad news.
+#: Deliberately excludes dual-use slang like "cooked"/"cooking" or "torched" -
+#: those mean opposite things depending on which side of the ball you mean, so
+#: they're not reliable negative signals on their own.
+_NEGATIVE_MARKERS: tuple[str, ...] = (
+    "horrific", "awful", "terrible", "disaster", "disastrous", "abysmal", "brutal",
+    "embarrassing", "meltdown", "atrocious", "putrid", "unwatchable", "hilariously bad",
+    "so bad", "historically bad", "worst start", "yikes", "ugly", "bust", "cratering",
+    "tanking", "done for the year", "benched him", "should be benched", "unplayable",
+    "trash", "dog water",
+)
 
 #: Beat reporters / insiders whose displayName we treat as high-signal on sight.
 #: Matched case-insensitively as a substring of the post author's display name.
@@ -377,15 +394,23 @@ def gather(client: BlueskyClient, player: CanonicalPlayer, *,
 def classify(posts: Iterable[Post]) -> BuzzCategory:
     """Whichever bucket the chatter leans into, weighted by post engagement."""
     scores = {c: 0.0 for c in _KEYWORDS}
+    negative_weight = 0.0
     for post in posts:
         text = f" {post.text.lower()} "
         weight = 1.0 + math.log1p(post.engagement)
         for cat, words in _KEYWORDS.items():
             if any(w in text for w in words):
                 scores[cat] += weight
+        if any(w in text for w in _NEGATIVE_MARKERS):
+            negative_weight += weight
     top = max(scores, key=scores.get)
     if scores[top] <= 0:
         return BuzzCategory.UNCLEAR
+    # A "big play" bucket driven mostly by posts that are actually mocking a
+    # bad outing ("scores a td down 20 late - hilariously bad") isn't good
+    # news; don't fly a celebratory 🔥 over what's really bad news.
+    if top == BuzzCategory.BIG_PLAY and negative_weight >= scores[top] * 0.5:
+        return BuzzCategory.BAD_PLAY
     # Require a clear leader; a near-tie across buckets reads as generic noise.
     ordered = sorted(scores.values(), reverse=True)
     if len(ordered) > 1 and ordered[1] >= ordered[0] * 0.8:
