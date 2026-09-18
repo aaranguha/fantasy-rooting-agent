@@ -9,8 +9,8 @@ import pytest
 
 from app.analysis import GameGuide
 from app.bluesky import (
-    BuzzCategory, BuzzResult, Post, assess, classify, extract_relevant_sentence,
-    gather, _parse_post, _relevant, update_baseline,
+    BuzzCategory, BuzzResult, Post, Sentiment, assess, classify, extract_relevant_sentence,
+    gather, sentiment_for, _parse_post, _relevant, update_baseline,
 )
 from app.config import AppConfig
 from app.models import CanonicalPlayer, League, Platform, ScoringSettings
@@ -94,6 +94,43 @@ def test_classify_genuine_big_play_with_fire_emoji_still_counts():
     assert classify(posts) == BuzzCategory.BIG_PLAY
 
 
+# -- sentiment (good/bad/neutral, separate from category) --------------
+
+def test_sentiment_injury_is_always_bad():
+    assert sentiment_for(BuzzCategory.INJURY, []) == Sentiment.BAD
+
+def test_sentiment_big_play_is_good_bad_play_is_bad():
+    assert sentiment_for(BuzzCategory.BIG_PLAY, []) == Sentiment.GOOD
+    assert sentiment_for(BuzzCategory.BAD_PLAY, []) == Sentiment.BAD
+
+def test_sentiment_unclear_is_neutral():
+    assert sentiment_for(BuzzCategory.UNCLEAR, []) == Sentiment.NEUTRAL
+
+def test_sentiment_news_leans_bad_for_a_suspension():
+    posts = [_parse_post(_raw("Sources: the team has suspended Nacua for one game"))]
+    assert sentiment_for(BuzzCategory.NEWS, posts) == Sentiment.BAD
+
+def test_sentiment_news_leans_good_for_a_contract_extension():
+    posts = [_parse_post(_raw("Breaking: Nacua signed a contract extension"))]
+    assert sentiment_for(BuzzCategory.NEWS, posts) == Sentiment.GOOD
+
+def test_sentiment_news_is_neutral_for_a_bare_trade_report():
+    # "traded"/"acquired" alone don't say whether it's a good or bad move for
+    # the player - no strong signal either way should stay neutral.
+    posts = [_parse_post(_raw("Sources: Nacua has been traded"))]
+    assert sentiment_for(BuzzCategory.NEWS, posts) == Sentiment.NEUTRAL
+
+def test_headline_and_summary_line_use_sentiment_emoji_not_category_emoji():
+    p = CanonicalPlayer(key="p:nacua", name="Puka Nacua", position="WR", nfl_team="LAR")
+    injury_post = _parse_post(_raw("Nacua carted off with a knee injury"))
+    r = BuzzResult(player=p, posts=[injury_post], category=BuzzCategory.INJURY,
+                   count=20, baseline=2.0)
+    r.top_post = injury_post
+    assert r.sentiment == Sentiment.BAD
+    assert r.headline().startswith("🔴 ")
+    assert r.summary_line().startswith("🔴 ")
+
+
 # -- extracting just the relevant clause ---------------------------
 
 def test_extract_pulls_only_the_players_clause_out_of_a_multi_topic_post():
@@ -113,7 +150,7 @@ def test_summary_line_is_just_the_clause_when_the_name_already_leads_it():
     r = BuzzResult(player=p, posts=[post], category=BuzzCategory.BIG_PLAY,
                   count=13, baseline=3.0)
     r.top_post = post
-    assert r.summary_line() == "🔥 Puka Nacua 41-yard catch"
+    assert r.summary_line() == "🟢 Puka Nacua 41-yard catch"
 
 def test_summary_line_prefixes_the_name_when_the_clause_omits_it():
     p = CanonicalPlayer(key="p:nacua", name="Puka Nacua", position="WR", nfl_team="LAR")
@@ -121,7 +158,7 @@ def test_summary_line_prefixes_the_name_when_the_clause_omits_it():
     r = BuzzResult(player=p, posts=[post], category=BuzzCategory.BIG_PLAY,
                   count=13, baseline=3.0)
     r.top_post = post
-    assert r.summary_line() == "🔥 Puka Nacua: 41-yard catch to open the second half"
+    assert r.summary_line() == "🟢 Puka Nacua: 41-yard catch to open the second half"
 
 
 # -- spike logic ----------------------------------------------------
@@ -244,7 +281,7 @@ def test_buzz_tick_sends_on_a_confirmed_spike(sched, monkeypatch):
     assert len(out) == 1 and out[0][1] == BuzzCategory.INJURY
     title, body = rec.sent[0]
     assert title == "📈 Bluesky: P. Nacua"
-    assert body == "🚑 Nacua carted off"
+    assert body == "🔴 Nacua carted off"
 
     # Immediate re-run: cooldown suppresses a second identical alert.
     assert s.buzz_tick() == []
@@ -284,8 +321,8 @@ def test_buzz_tick_combines_multiple_spikes_into_one_tight_push(tmp_path, monkey
     assert len(out) == 2
     title, body = rec.sent[0]
     assert title == "📈 Bluesky: P. Nacua + K. Williams"
-    assert body == ("🔥 Puka Nacua 41-yard catch\n"
-                    "🔥 Kyren Williams rushes in for a Rams touchdown")
+    assert body == ("🟢 Puka Nacua 41-yard catch\n"
+                    "🟢 Kyren Williams rushes in for a Rams touchdown")
 
 
 def _state_with_opponent(player_obj):

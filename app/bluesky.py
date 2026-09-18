@@ -53,6 +53,23 @@ EMA_ALPHA = 0.3
 COOLDOWN_MINUTES = 30
 
 
+class Sentiment(str, Enum):
+    """Is this actually good, bad, or neutral news for the player's fantasy
+    value? Separate from BuzzCategory (which is about WHAT happened - injury,
+    big play, news, etc.) - this is about whether it's worth smiling or
+    wincing at. The push always leads with this emoji so it reads correctly
+    at a glance, e.g. an injury update is bad news even though "INJURY" as a
+    category label doesn't say so by itself."""
+
+    GOOD = "good"
+    BAD = "bad"
+    NEUTRAL = "neutral"
+
+    @property
+    def emoji(self) -> str:
+        return {"good": "🟢", "bad": "🔴", "neutral": "⚪"}[self.value]
+
+
 class BuzzCategory(str, Enum):
     INJURY = "injury"
     BIG_PLAY = "big_play"
@@ -64,11 +81,6 @@ class BuzzCategory(str, Enum):
     def label(self) -> str:
         return {"injury": "INJURY", "big_play": "BIG PLAY", "bad_play": "ROUGH OUTING",
                 "news": "NEWS", "unclear": "TRENDING"}[self.value]
-
-    @property
-    def emoji(self) -> str:
-        return {"injury": "🚑", "big_play": "🔥", "bad_play": "😬",
-                "news": "📰", "unclear": "📈"}[self.value]
 
 
 _KEYWORDS: dict[BuzzCategory, tuple[str, ...]] = {
@@ -110,6 +122,19 @@ _NEGATIVE_MARKERS: tuple[str, ...] = (
     "so bad", "historically bad", "worst start", "yikes", "ugly", "bust", "cratering",
     "tanking", "done for the year", "benched him", "should be benched", "unplayable",
     "trash", "dog water",
+)
+
+#: NEWS is the one category that can go either way (a suspension is bad, an
+#: extension is good) - these decide which way a given NEWS spike leans.
+#: Deliberately excludes ambiguous NEWS keywords like "traded"/"acquired"
+#: (could be a fresh start or a demotion) and pure attribution words
+#: ("sources:", "breaking") that carry no sentiment of their own.
+_NEWS_BAD_MARKERS: tuple[str, ...] = (
+    "released", "waived", "cut ", "suspended", "suspension", "benched", "benching",
+    "ruled inactive", "healthy scratch", "fined", "arrested", "ejected", "deactivated",
+)
+_NEWS_GOOD_MARKERS: tuple[str, ...] = (
+    "signed", "activated", "promoted", "elevated", "extension",
 )
 
 #: Beat reporters / insiders whose displayName we treat as high-signal on sight.
@@ -187,6 +212,11 @@ class BuzzResult:
     baseline: float                       # expected posts in the window
     top_post: Optional[Post] = None
     reporter_posts: list[Post] = field(default_factory=list)
+    sentiment: Optional[Sentiment] = None
+
+    def __post_init__(self) -> None:
+        if self.sentiment is None:
+            self.sentiment = sentiment_for(self.category, self.posts)
 
     @property
     def is_spike(self) -> bool:
@@ -198,7 +228,7 @@ class BuzzResult:
     def headline(self) -> str:
         c = self.category
         tail = "trending, reason unclear" if c == BuzzCategory.UNCLEAR else c.label
-        return f"{c.emoji} {self.player.name} is blowing up on Bluesky — {tail}"
+        return f"{self.sentiment.emoji} {self.player.name} is blowing up on Bluesky — {tail}"
 
     def body(self) -> str:
         lines = []
@@ -227,7 +257,7 @@ class BuzzResult:
         last = (self.player.name.split() or [self.player.name])[-1].lower()
         if last not in clause.lower():
             clause = f"{self.player.name}: {clause}"
-        return f"{self.category.emoji} {clause}"
+        return f"{self.sentiment.emoji} {clause}"
 
     def _best_quote(self) -> Optional[Post]:
         pool = self.reporter_posts or self.posts
@@ -416,6 +446,36 @@ def classify(posts: Iterable[Post]) -> BuzzCategory:
     if len(ordered) > 1 and ordered[1] >= ordered[0] * 0.8:
         return BuzzCategory.UNCLEAR
     return top
+
+
+#: Every category has an obvious sentiment except NEWS, which depends on
+#: which way the actual story leans (a suspension is bad, an extension is
+#: good).
+_CATEGORY_SENTIMENT: dict[BuzzCategory, Sentiment] = {
+    BuzzCategory.INJURY: Sentiment.BAD,
+    BuzzCategory.BIG_PLAY: Sentiment.GOOD,
+    BuzzCategory.BAD_PLAY: Sentiment.BAD,
+    BuzzCategory.UNCLEAR: Sentiment.NEUTRAL,
+}
+
+
+def sentiment_for(category: BuzzCategory, posts: Iterable[Post]) -> Sentiment:
+    """Is this actually good, bad, or neutral news for the player? Only NEWS
+    needs the posts themselves - every other category's sentiment follows
+    directly from what kind of event it is."""
+    if category != BuzzCategory.NEWS:
+        return _CATEGORY_SENTIMENT[category]
+    bad = good = 0.0
+    for post in posts:
+        text = f" {post.text.lower()} "
+        weight = 1.0 + math.log1p(post.engagement)
+        if any(w in text for w in _NEWS_BAD_MARKERS):
+            bad += weight
+        if any(w in text for w in _NEWS_GOOD_MARKERS):
+            good += weight
+    if bad == good:
+        return Sentiment.NEUTRAL
+    return Sentiment.BAD if bad > good else Sentiment.GOOD
 
 
 def assess(client: BlueskyClient, player: CanonicalPlayer, baseline: float, *,
