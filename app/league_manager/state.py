@@ -1,9 +1,9 @@
 """Gathers everything needed to manage one Sleeper league: rosters, the
 current matchup, the free-agent pool and recent league transactions.
 
-Read-only - Sleeper's public API has no write endpoints, which is exactly why
-this module only *gathers*. Actually changing a roster happens in
-``app.providers.sleeper_write`` instead.
+Read-only - Sleeper's public API has no write endpoints, and this module
+only ever reads anyway: app.league_manager stays recommend-only (see
+app/league_manager/actions.py for why) rather than touching Sleeper directly.
 """
 
 from __future__ import annotations

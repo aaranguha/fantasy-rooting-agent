@@ -129,19 +129,18 @@ def test_decide_nudges_model_that_stops_without_submitting(monkeypatch):
 # notify.py - message formatting is pure text, easy to pin down
 # ---------------------------------------------------------------------------
 
-def test_format_message_dry_run_marks_actions_hypothetical():
+def test_format_message_lists_recommended_actions():
     d = Decision(summary="Bench the injured guy.",
                  waiver_claims=[{"add_player_name": "Free Agent", "drop_player_name": "",
                                 "faab_bid": 5, "reasoning": "upside"}])
-    title, body = format_message("I MEAN WE COULDD", d, dry_run=True,
-                                 executed=["[dry-run] would claim Free Agent for $5 FAAB"],
-                                 failed=[])
-    assert "DRY RUN" in title
+    title, body = format_message("I MEAN WE COULDD", d)
+    assert "I MEAN WE COULDD" in title
     assert "Free Agent" in body
-    assert "would claim" in body
+    assert "$5 FAAB" in body
+    assert "tap them into the Sleeper app yourself" in body
 
 
 def test_format_message_no_actions_says_so():
     d = Decision(summary="Everything looks right.")
-    _, body = format_message("League", d, dry_run=True, executed=[], failed=[])
+    _, body = format_message("League", d)
     assert "No moves this check-in" in body

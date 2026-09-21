@@ -18,51 +18,45 @@ def _bot() -> TelegramNotifier:
     )
 
 
-def format_message(league_name: str, decision: Decision, *, dry_run: bool,
-                    executed: list[str], failed: list[str]) -> tuple[str, str]:
-    mode = "🧪 DRY RUN — nothing sent to Sleeper" if dry_run else "✅ LIVE"
-    title = f"🏈 {league_name} — {mode}"
+def format_message(league_name: str, decision: Decision) -> tuple[str, str]:
+    title = f"🏈 {league_name}"
 
     lines = [decision.summary.strip(), ""]
 
     if decision.lineup_changes:
-        lines.append("📋 Lineup:")
+        lines.append("📋 Lineup — start:")
         for c in decision.lineup_changes:
             lines.append(f"  {c['slot']}: {c['bench_player_name']} → {c['start_player_name']}")
             lines.append(f"    ({c['reasoning']})")
     if decision.waiver_claims:
-        lines.append("\n🔄 Waivers:")
+        lines.append("\n🔄 Waivers — claim:")
         for c in decision.waiver_claims:
             drop = f" / drop {c['drop_player_name']}" if c.get("drop_player_name") else ""
             bid = f" — ${c['faab_bid']} FAAB" if c.get("faab_bid") else ""
             lines.append(f"  +{c['add_player_name']}{drop}{bid}")
             lines.append(f"    ({c['reasoning']})")
     if decision.trade_proposals:
-        lines.append("\n🤝 Trade proposals:")
+        lines.append("\n🤝 Trade to propose:")
         for t in decision.trade_proposals:
             lines.append(f"  To {t['target_team_name']}: give {', '.join(t['give'])} "
                          f"for {', '.join(t['get'])}")
             lines.append(f"    ({t['reasoning']})")
     if not decision.has_actions:
         lines.append("No moves this check-in — lineup and roster already look right.")
+    else:
+        lines.append("\n👉 These are recommendations — tap them into the Sleeper app yourself.")
     if decision.notes:
         lines.append(f"\n📝 {decision.notes}")
-    if executed:
-        lines.append("\n✅ Executed: " + "; ".join(executed))
-    if failed:
-        lines.append("\n⚠️ Failed to execute (check manually in the app): " + "; ".join(failed))
     lines.append(f"\n[{decision.searches_used} web searches this run]")
 
     return title, "\n".join(lines)
 
 
-def send_update(league_name: str, decision: Decision, *, dry_run: bool,
-                 executed: list[str], failed: list[str]) -> tuple[bool, str]:
+def send_update(league_name: str, decision: Decision) -> tuple[bool, str]:
     bot = _bot()
     ok, why = bot.available()
     if not ok:
         return False, f"Telegram not configured: {why}"
-    title, body = format_message(league_name, decision, dry_run=dry_run,
-                                  executed=executed, failed=failed)
+    title, body = format_message(league_name, decision)
     result = bot.send(title, body)
     return result.ok, result.detail

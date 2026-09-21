@@ -728,34 +728,29 @@ continues on whatever tier of data survives and says so, rather than failing.
 
 A second, separate engine (`app/league_manager/`) from the rooting agent above.
 Where `fantasy-agent week` / `tonight` / etc. tell you who to root for, `manage-league`
-actually **runs one league**: sets your lineup, submits waiver claims and proposes
-trades, researching the web for injury news and expert rankings before every call, then
-texts you what it did on its own dedicated Telegram bot. It runs on a schedule via
-`.github/workflows/league-manager.yml` — GitHub's servers, not your Mac.
+researches one league (injury news, expert rankings, waiver targets, trade value) and
+texts you concrete lineup/waiver/trade recommendations on its own dedicated Telegram
+bot. It runs on a schedule via `.github/workflows/league-manager.yml` — GitHub's
+servers, not your Mac.
 
 ```
-fantasy-agent manage-league               # dry run: research + decide + Telegram, no Sleeper writes
-fantasy-agent manage-league --live        # actually executes on Sleeper
-fantasy-agent verify-sleeper-session      # confirm a captured session is still logged in
+fantasy-agent manage-league               # research + decide + Telegram
 ```
 
-**Be honest with yourself about what this is.** It has full autonomy — no approval
-step before a waiver claim, lineup change or trade proposal goes out — and trade
-proposals land in front of real people in your league. It runs on an LLM's read of
-the current week's news; it will occasionally be wrong the way any manager can be
-wrong. Nothing here is reversible after the fact the way undoing a file edit is.
+**Recommend-only, on purpose.** It never touches your Sleeper roster directly — you
+tap its suggestions into the app yourself, which takes about as long as reading the
+text. Two things ruled out full automation here: Sleeper's API is read-only (no
+supported way to add/drop, submit a waiver claim, set a lineup or propose a trade
+programmatically), and driving the actual sleeper.com UI via browser automation ran
+straight into Sleeper's own hCaptcha-based bot detection — confirmed by hand, it
+silently blanks the page behind an unsolvable captcha for any browser that announces
+itself as automated. That's a real anti-bot system to work around, not a bug to fix,
+and most fantasy platforms' ToS disallow scripted write-access in the first place — so
+this stays read/research/recommend only rather than fighting that fight.
 
-### Why this needed a workaround
-
-Sleeper's API is read-only — there is no supported way to add/drop a player, submit
-a waiver claim, set a lineup or propose a trade programmatically. `manage-league`
-gets around this the only way available: `app/providers/sleeper_write.py` drives an
-actual logged-in browser session (Playwright) through the real sleeper.com UI, the
-same as a human clicking through the app. That makes it slower and more fragile than
-a real API call — a Sleeper UI change can break a selector — which is why every
-`--live` run reports exactly what it executed and what failed straight to Telegram,
-and why a run **silently falls back to dry-run** if it can't find a valid captured
-session, rather than silently doing nothing while claiming success.
+It still runs on an LLM's read of the current week's news, so it will occasionally be
+wrong the way any manager can be — that's just true of the recommendations, same as
+it would be of a friend's advice.
 
 ### Setup
 
@@ -783,27 +778,13 @@ session, rather than silently doing nothing while claiming success.
    gh secret set OPENAI_API_KEY
    ```
 
-3. **Local dependencies**, to run `--live` checks or capture a session:
+3. **Local dependency**, only needed to run it from your own machine instead of
+   waiting for the schedule:
    ```bash
    pip install -e ".[league-manager]"
-   playwright install chromium
    ```
 
-4. **A captured Sleeper session** — this is the one step that can't be done for you,
-   since it means logging into your own Sleeper account. Nothing but the resulting
-   session cookies ever leaves your browser:
-   ```bash
-   python3 scripts/capture_sleeper_session.py    # opens a real browser window; log in normally
-   fantasy-agent verify-sleeper-session           # confirms it took
-   gh secret set SLEEPER_SESSION_STATE < ~/.fantasy-agent/sleeper_session.json
-   ```
-   Sleeper sessions eventually expire — when `--live` runs start reporting "session
-   expired," re-run the capture script and push the secret again.
-
-Until step 4 is done, the scheduled workflow runs harmlessly in dry-run: you'll get
-the Telegram research/decision messages with no risk of a broken action on your
-roster, which is a reasonable way to sanity-check its judgment for a week or two
-before trusting it with `--live`.
+That's it — no Sleeper login, no captured session, nothing that can go stale.
 
 ### Schedule
 
@@ -811,4 +792,4 @@ Four check-ins a week (`.github/workflows/league-manager.yml`, cron in UTC): Tue
 evening before waivers process, Thursday afternoon before TNF locks, Saturday evening
 for Sunday-slate prep, Sunday morning as a final lineup check. Edit the `cron:` lines
 to change cadence — GitHub Actions has no minimum interval, but every run costs
-Anthropic API tokens, so more frequent isn't free.
+OpenAI API tokens, so more frequent isn't free.

@@ -1,9 +1,12 @@
 name: League Manager (I MEAN WE COULDD)
 
-# Autonomously manages one league: lineup, waivers, trades. Separate engine
+# Researches one league and texts lineup/waiver/trade recommendations.
+# Recommend-only, permanently - see README.md "League Manager" for why (short
+# version: Sleeper has no write API, and driving the site via browser
+# automation ran straight into Sleeper's own bot detection). Separate engine
 # from rooting-agent.yml, and deliberately infrequent - a handful of
-# check-ins a week, not a poll loop, since each run spends real Anthropic
-# API tokens (see README.md "League Manager" -> cost).
+# check-ins a week, not a poll loop, since each run spends real OpenAI API
+# tokens (see README.md "League Manager" -> cost).
 #
 # Times are UTC and fixed at PDT (UTC-7) offsets; after the Nov DST change
 # these land ~1hr earlier Pacific time until updated - acceptable drift for
@@ -12,10 +15,6 @@ name: League Manager (I MEAN WE COULDD)
 #   Thu 1:00pm PT - before Thursday Night Football locks
 #   Sat 6:00pm PT - Sunday slate prep, injury news
 #   Sun 8:00am PT - final lineup lock check before early games
-#
-# --live is always passed; app/league_manager/run.py itself falls back to a
-# safe dry-run whenever SLEEPER_SESSION_STATE hasn't been set up yet, so
-# this workflow is harmless to enable before that step is done.
 on:
   push:
     branches: [master]
@@ -47,12 +46,8 @@ jobs:
       - name: Install
         run: pip install -e ".[league-manager]"
 
-      - name: Install Playwright Chromium
-        run: playwright install --with-deps chromium
-
       - name: Write secrets
         run: |
-          mkdir -p ~/.fantasy-agent
           cat > .env <<EOF
           NOTIFIER=telegram
           OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
@@ -61,12 +56,6 @@ jobs:
           LEAGUE_MANAGER_TELEGRAM_CHAT_ID=${{ secrets.LEAGUE_MANAGER_TELEGRAM_CHAT_ID }}
           FANTASY_AGENT_HOME=${{ github.workspace }}/state
           EOF
-          # Sleeper has no write API - this is the captured login session
-          # (see scripts/capture_sleeper_session.py). Absent -> safe dry-run.
-          if [ -n "${{ secrets.SLEEPER_SESSION_STATE }}" ]; then
-            echo '${{ secrets.SLEEPER_SESSION_STATE }}' > ~/.fantasy-agent/sleeper_session.json
-            chmod 600 ~/.fantasy-agent/sleeper_session.json
-          fi
 
       - name: Run
-        run: fantasy-agent manage-league --live
+        run: fantasy-agent manage-league

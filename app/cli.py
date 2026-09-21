@@ -885,18 +885,15 @@ def dashboard(port: int, week: Optional[int], no_browser: bool) -> None:
 @cli.command("manage-league")
 @click.option("--league-id", default=None,
               help='Sleeper league id. Defaults to the league named "I MEAN WE COULDD" in config.json.')
-@click.option("--live", is_flag=True,
-              help="Actually execute moves on Sleeper via browser automation. "
-                   "Without this, everything is a dry run: researched, decided, "
-                   "and reported to Telegram, but nothing touches your roster.")
-def manage_league(league_id: Optional[str], live: bool) -> None:
-    """Research and manage one league autonomously: lineup, waivers, trades.
+def manage_league(league_id: Optional[str]) -> None:
+    """Research one league and text lineup/waiver/trade recommendations.
 
     Separate engine from the primetime rooting commands above - this one
-    decides what to DO with a roster instead of what to root for, and (with
-    --live) can act on Sleeper directly via app.providers.sleeper_write.
-    See README.md "League Manager" for setup (Telegram bot, ANTHROPIC_API_KEY,
-    Sleeper session capture).
+    decides what to DO with a roster instead of what to root for. Recommend-
+    only: it never touches Sleeper directly (no write API exists, and driving
+    the site via browser automation ran straight into Sleeper's own bot
+    detection - see README.md "League Manager" for the full story). You tap
+    its suggestions into the app yourself.
     """
     from .league_manager.run import run as run_league_manager
 
@@ -917,37 +914,18 @@ def manage_league(league_id: Optional[str], live: bool) -> None:
             sys.exit(1)
         lid = match.league_id
 
-    console.print(f"[bold]Managing league {lid}[/]"
-                  + (" [green](LIVE)[/]" if live else " [yellow](dry run)[/]"))
+    console.print(f"[bold]Researching league {lid}[/]")
     with console.status("[bright_black]Gathering roster state, researching, deciding…[/]"):
-        summary = run_league_manager(lid, cfg.sleeper_username, live=live)
+        summary = run_league_manager(lid, cfg.sleeper_username)
 
     console.print(f"Week {summary['week']} · {summary['league']}")
     console.print(f"  Lineup changes: {summary['lineup_changes']}  "
                   f"Waiver claims: {summary['waiver_claims']}  "
                   f"Trade proposals: {summary['trade_proposals']}")
-    for line in summary["executed"]:
-        console.print(f"  [green]✓[/] {line}")
-    for line in summary["failed"]:
-        console.print(f"  [red]✗[/] {line}")
+    for line in summary["recommendations"]:
+        console.print(f"  → {line}")
     console.print(f"Telegram: {'[green]sent[/]' if summary['telegram_sent'] else '[red]failed[/]'} "
                   f"— {summary['telegram_detail']}")
-
-
-@cli.command("verify-sleeper-session")
-def verify_sleeper_session() -> None:
-    """Confirm the captured Sleeper session (scripts/capture_sleeper_session.py)
-    is actually logged in, before trusting `manage-league --live` to it."""
-    from .league_manager.actions import default_session_path
-    from .providers import sleeper_write as sw
-
-    path = default_session_path()
-    result = sw.verify(path)
-    if result.ok:
-        console.print(f"[green]✓[/] {result.detail}")
-    else:
-        console.print(f"[red]✗[/] {result.detail}")
-        sys.exit(1)
 
 
 @cli.command("install-launchd")
