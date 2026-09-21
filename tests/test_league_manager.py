@@ -47,7 +47,7 @@ def test_roster_view_splits_starters_and_bench_and_flags_me():
 
 
 # ---------------------------------------------------------------------------
-# decide.py - the agentic loop against a stubbed Anthropic client
+# decide.py - the agentic loop against a stubbed OpenAI client
 # ---------------------------------------------------------------------------
 
 def _fake_state():
@@ -62,18 +62,19 @@ def _fake_state():
     )
 
 
-class _FakeToolUseBlock:
-    type = "tool_use"
+class _FakeFunctionCall:
+    type = "function_call"
     name = "submit_decisions"
 
     def __init__(self, data):
-        self.input = data
+        import json as _json
+        self.arguments = _json.dumps(data)
 
 
 class _FakeResponse:
-    def __init__(self, content, stop_reason):
-        self.content = content
-        self.stop_reason = stop_reason
+    def __init__(self, output, resp_id="resp_1"):
+        self.output = output
+        self.id = resp_id
 
 
 def test_decide_returns_decision_once_model_calls_submit_tool(monkeypatch):
@@ -84,41 +85,41 @@ def test_decide_returns_decision_once_model_calls_submit_tool(monkeypatch):
 
     calls = []
 
-    class FakeMessages:
+    class FakeResponses:
         def create(self, **kwargs):
             calls.append(kwargs)
-            return _FakeResponse([_FakeToolUseBlock(payload)], "tool_use")
+            return _FakeResponse([_FakeFunctionCall(payload)])
 
     class FakeClient:
         def __init__(self, *a, **kw):
-            self.messages = FakeMessages()
+            self.responses = FakeResponses()
 
-    monkeypatch.setattr("app.league_manager.decide.anthropic.Anthropic", FakeClient)
+    monkeypatch.setattr("app.league_manager.decide.OpenAI", FakeClient)
 
     result = decide(_fake_state())
     assert isinstance(result, Decision)
     assert result.summary == "Starting Puka, no moves this week."
     assert result.has_actions is False
-    assert calls[0]["model"] == "claude-opus-5"
+    assert calls[0]["model"] == "gpt-4.1-mini"
 
 
 def test_decide_nudges_model_that_stops_without_submitting(monkeypatch):
     payload = {"summary": "ok", "lineup_changes": [], "waiver_claims": [],
                "trade_proposals": [], "notes": ""}
     responses = [
-        _FakeResponse([SimpleNamespace(type="text", text="thinking out loud")], "end_turn"),
-        _FakeResponse([_FakeToolUseBlock(payload)], "tool_use"),
+        _FakeResponse([SimpleNamespace(type="text", text="thinking out loud")]),
+        _FakeResponse([_FakeFunctionCall(payload)]),
     ]
 
-    class FakeMessages:
+    class FakeResponses:
         def create(self, **kwargs):
             return responses.pop(0)
 
     class FakeClient:
         def __init__(self, *a, **kw):
-            self.messages = FakeMessages()
+            self.responses = FakeResponses()
 
-    monkeypatch.setattr("app.league_manager.decide.anthropic.Anthropic", FakeClient)
+    monkeypatch.setattr("app.league_manager.decide.OpenAI", FakeClient)
 
     result = decide(_fake_state())
     assert result.summary == "ok"

@@ -771,14 +771,16 @@ session, rather than silently doing nothing while claiming success.
    gh secret set LEAGUE_MANAGER_TELEGRAM_CHAT_ID
    ```
 
-2. **An Anthropic API key** for the research + decision engine, at
-   [console.anthropic.com](https://console.anthropic.com) → API Keys. This is a
-   separate, pay-as-you-go account from any Claude subscription — expect on the
-   order of **$1-5/month** for 4 runs/week at the `claude-opus-5` default (set
-   `LEAGUE_MANAGER_MODEL=claude-sonnet-5` for roughly 60% less if that matters more
-   than the last bit of judgment). Push it:
+2. **An OpenAI API key** for the research + decision engine, at
+   [platform.openai.com](https://platform.openai.com) → API Keys. Pay-as-you-go;
+   expect well under **$1/month** for 4 runs/week at the `gpt-4.1-mini` default —
+   the cheapest OpenAI model that still supports the `web_search` tool this
+   pipeline needs. **Do not** set `LEAGUE_MANAGER_MODEL` to `gpt-5-nano` or
+   `gpt-5-mini` — neither supports `web_search` (confirmed against OpenAI's docs,
+   Sep 2026), so decisions would silently stop being grounded in real injury
+   news/rankings and just come from the model's training data instead. Push it:
    ```bash
-   gh secret set ANTHROPIC_API_KEY
+   gh secret set OPENAI_API_KEY
    ```
 
 3. **Local dependencies**, to run `--live` checks or capture a session:

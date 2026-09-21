@@ -18,9 +18,9 @@ dependencies = [
 twilio = ["twilio>=8.0"]
 # Only needed by scripts/grab_espn_cookies.py to decrypt Chromium's cookie store.
 cookies = ["cryptography>=42.0"]
-# The league manager: research/decisions via the Claude API, execution via
+# The league manager: research/decisions via the OpenAI API, execution via
 # a real browser session (Sleeper has no write API).
-league-manager = ["anthropic>=0.40", "playwright>=1.40"]
+league-manager = ["openai>=1.50", "playwright>=1.40"]
 dev = ["pytest>=7.4", "pytest-cov>=4.1"]
 
 [project.scripts]
