@@ -27,6 +27,7 @@ def run(league_id: str, sleeper_username: str) -> dict:
         "waiver_claims": len(decision.waiver_claims),
         "trade_proposals": len(decision.trade_proposals),
         "recommendations": recommendations,
+        "searches_used": decision.searches_used,
         "telegram_sent": ok,
         "telegram_detail": detail,
     }

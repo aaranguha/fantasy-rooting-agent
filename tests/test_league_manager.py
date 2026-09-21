@@ -190,18 +190,20 @@ def test_decide_demands_a_real_search_before_accepting_zero_search_submission(mo
 # notify.py - message formatting is pure text, easy to pin down
 # ---------------------------------------------------------------------------
 
-def test_format_message_lists_recommended_actions():
+def test_format_message_lists_recommended_actions_concisely():
     d = Decision(summary="Bench the injured guy.",
                  waiver_claims=[{"add_player_name": "Free Agent", "drop_player_name": "",
                                 "faab_bid": 5, "reasoning": "upside"}])
     title, body = format_message("I MEAN WE COULDD", d)
     assert "I MEAN WE COULDD" in title
     assert "Free Agent" in body
-    assert "$5 FAAB" in body
-    assert "tap them into the Sleeper app yourself" in body
+    assert "$5FAAB" in body
+    # one line per action, no verbose framing
+    assert body.count("\n") == 1
+    assert "tap them into" not in body
 
 
-def test_format_message_no_actions_says_so():
+def test_format_message_no_actions_uses_summary_as_the_whole_body():
     d = Decision(summary="Everything looks right.")
     _, body = format_message("League", d)
-    assert "No moves this check-in" in body
+    assert body == "Everything looks right."

@@ -918,7 +918,8 @@ def manage_league(league_id: Optional[str]) -> None:
     with console.status("[bright_black]Gathering roster state, researching, deciding…[/]"):
         summary = run_league_manager(lid, cfg.sleeper_username)
 
-    console.print(f"Week {summary['week']} · {summary['league']}")
+    console.print(f"Week {summary['week']} · {summary['league']} "
+                  f"[bright_black]({summary['searches_used']} web searches)[/]")
     console.print(f"  Lineup changes: {summary['lineup_changes']}  "
                   f"Waiver claims: {summary['waiver_claims']}  "
                   f"Trade proposals: {summary['trade_proposals']}")

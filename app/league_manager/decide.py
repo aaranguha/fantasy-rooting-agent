@@ -44,8 +44,9 @@ SUBMIT_TOOL = {
         "properties": {
             "summary": {
                 "type": "string",
-                "description": "2-4 sentence plain-English summary for a Telegram message: "
-                               "what you're doing this week and why.",
+                "description": "ONE short sentence for a Telegram message - the headline, not a "
+                               "report. E.g. 'Nacua's questionable, everything else is set' or "
+                               "'Claiming the Bears' new WR1 off waivers.' Max ~15 words.",
             },
             "lineup_changes": {
                 "type": "array",
@@ -61,7 +62,9 @@ SUBMIT_TOOL = {
                         "start_player_name": {"type": "string"},
                         "bench_player_id": {"type": "string"},
                         "bench_player_name": {"type": "string"},
-                        "reasoning": {"type": "string"},
+                        "reasoning": {"type": "string",
+                                     "description": "One short clause, ~10 words max - this goes "
+                                                    "inline in a text message, not a paragraph."},
                     },
                 },
             },
@@ -86,7 +89,9 @@ SUBMIT_TOOL = {
                             "description": "Dollars out of the league's FAAB budget, 0 if this "
                                            "is a free rolling-waiver claim instead.",
                         },
-                        "reasoning": {"type": "string"},
+                        "reasoning": {"type": "string",
+                                     "description": "One short clause, ~10 words max - this goes "
+                                                    "inline in a text message, not a paragraph."},
                     },
                 },
             },
@@ -103,15 +108,17 @@ SUBMIT_TOOL = {
                                  "description": "Player names you're offering."},
                         "get": {"type": "array", "items": {"type": "string"},
                                 "description": "Player names you're asking for."},
-                        "reasoning": {"type": "string"},
+                        "reasoning": {"type": "string",
+                                     "description": "One short clause, ~15 words max - why this "
+                                                    "is fair to both sides."},
                     },
                 },
             },
             "notes": {
                 "type": "string",
-                "description": "Anything worth flagging that isn't an action: injury risk on a "
-                               "starter, a bye week coming up, low confidence in a call, etc. "
-                               "Empty string if nothing.",
+                "description": "Only something genuinely worth flagging that isn't already an "
+                               "action - a real injury risk, a bye week, low confidence. Empty "
+                               "string in most weeks; when used, one short sentence, not a list.",
             },
         },
     },

@@ -19,35 +19,29 @@ def _bot() -> TelegramNotifier:
 
 
 def format_message(league_name: str, decision: Decision) -> tuple[str, str]:
+    """One line per action, reason folded in - built to read at a glance on
+    a phone lock screen, not as a report."""
     title = f"🏈 {league_name}"
 
-    lines = [decision.summary.strip(), ""]
-
-    if decision.lineup_changes:
-        lines.append("📋 Lineup — start:")
-        for c in decision.lineup_changes:
-            lines.append(f"  {c['slot']}: {c['bench_player_name']} → {c['start_player_name']}")
-            lines.append(f"    ({c['reasoning']})")
-    if decision.waiver_claims:
-        lines.append("\n🔄 Waivers — claim:")
-        for c in decision.waiver_claims:
-            drop = f" / drop {c['drop_player_name']}" if c.get("drop_player_name") else ""
-            bid = f" — ${c['faab_bid']} FAAB" if c.get("faab_bid") else ""
-            lines.append(f"  +{c['add_player_name']}{drop}{bid}")
-            lines.append(f"    ({c['reasoning']})")
-    if decision.trade_proposals:
-        lines.append("\n🤝 Trade to propose:")
-        for t in decision.trade_proposals:
-            lines.append(f"  To {t['target_team_name']}: give {', '.join(t['give'])} "
-                         f"for {', '.join(t['get'])}")
-            lines.append(f"    ({t['reasoning']})")
     if not decision.has_actions:
-        lines.append("No moves this check-in — lineup and roster already look right.")
-    else:
-        lines.append("\n👉 These are recommendations — tap them into the Sleeper app yourself.")
+        body = decision.summary.strip() or "No moves — lineup's right."
+        if decision.notes:
+            body += f"\n📝 {decision.notes}"
+        return title, body
+
+    lines = [decision.summary.strip()]
+    for c in decision.lineup_changes:
+        lines.append(f"📋 {c['slot']}: {c['bench_player_name']} → {c['start_player_name']} "
+                     f"({c['reasoning']})")
+    for c in decision.waiver_claims:
+        drop = f", drop {c['drop_player_name']}" if c.get("drop_player_name") else ""
+        bid = f" ${c['faab_bid']}FAAB" if c.get("faab_bid") else ""
+        lines.append(f"🔄 +{c['add_player_name']}{drop}{bid} ({c['reasoning']})")
+    for t in decision.trade_proposals:
+        lines.append(f"🤝 {t['target_team_name']}: give {', '.join(t['give'])} for "
+                     f"{', '.join(t['get'])} ({t['reasoning']})")
     if decision.notes:
-        lines.append(f"\n📝 {decision.notes}")
-    lines.append(f"\n[{decision.searches_used} web searches this run]")
+        lines.append(f"📝 {decision.notes}")
 
     return title, "\n".join(lines)
 
