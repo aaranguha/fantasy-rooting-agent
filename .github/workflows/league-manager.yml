@@ -1,0 +1,72 @@
+name: League Manager (I MEAN WE COULDD)
+
+# Autonomously manages one league: lineup, waivers, trades. Separate engine
+# from rooting-agent.yml, and deliberately infrequent - a handful of
+# check-ins a week, not a poll loop, since each run spends real Anthropic
+# API tokens (see README.md "League Manager" -> cost).
+#
+# Times are UTC and fixed at PDT (UTC-7) offsets; after the Nov DST change
+# these land ~1hr earlier Pacific time until updated - acceptable drift for
+# this use case, not worth a timezone-aware scheduler for 4 runs/week.
+#   Tue 6:00pm PT - before Tuesday-night waivers process
+#   Thu 1:00pm PT - before Thursday Night Football locks
+#   Sat 6:00pm PT - Sunday slate prep, injury news
+#   Sun 8:00am PT - final lineup lock check before early games
+#
+# --live is always passed; app/league_manager/run.py itself falls back to a
+# safe dry-run whenever SLEEPER_SESSION_STATE hasn't been set up yet, so
+# this workflow is harmless to enable before that step is done.
+on:
+  push:
+    branches: [master]
+    paths: [".github/workflows/league-manager.yml"]
+  schedule:
+    - cron: "3 1 * * 3"    # Tue 6:00pm PT
+    - cron: "7 20 * * 4"   # Thu 1:00pm PT
+    - cron: "11 1 * * 0"   # Sat 6:00pm PT
+    - cron: "17 15 * * 0"  # Sun 8:00am PT
+  workflow_dispatch: {}
+
+concurrency:
+  group: league-manager
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  manage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install -e ".[league-manager]"
+
+      - name: Install Playwright Chromium
+        run: playwright install --with-deps chromium
+
+      - name: Write secrets
+        run: |
+          mkdir -p ~/.fantasy-agent
+          cat > .env <<EOF
+          NOTIFIER=telegram
+          ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
+          LEAGUE_MANAGER_MODEL=${{ secrets.LEAGUE_MANAGER_MODEL }}
+          LEAGUE_MANAGER_TELEGRAM_BOT_TOKEN=${{ secrets.LEAGUE_MANAGER_TELEGRAM_BOT_TOKEN }}
+          LEAGUE_MANAGER_TELEGRAM_CHAT_ID=${{ secrets.LEAGUE_MANAGER_TELEGRAM_CHAT_ID }}
+          FANTASY_AGENT_HOME=${{ github.workspace }}/state
+          EOF
+          # Sleeper has no write API - this is the captured login session
+          # (see scripts/capture_sleeper_session.py). Absent -> safe dry-run.
+          if [ -n "${{ secrets.SLEEPER_SESSION_STATE }}" ]; then
+            echo '${{ secrets.SLEEPER_SESSION_STATE }}' > ~/.fantasy-agent/sleeper_session.json
+            chmod 600 ~/.fantasy-agent/sleeper_session.json
+          fi
+
+      - name: Run
+        run: fantasy-agent manage-league --live

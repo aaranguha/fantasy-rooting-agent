@@ -1,0 +1,146 @@
+"""League manager: decision parsing, message formatting, and roster
+resolution - all pure/mocked, no real Sleeper or Anthropic calls."""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+from app.league_manager.decide import Decision, decide
+from app.league_manager.notify import format_message
+from app.league_manager.state import PlayerRef, RosterView, _resolve, _roster_view
+
+
+# ---------------------------------------------------------------------------
+# state.py helpers
+# ---------------------------------------------------------------------------
+
+DUMP = {
+    "100": {"full_name": "Puka Nacua", "position": "WR", "team": "LAR", "injury_status": ""},
+    "200": {"full_name": "Kyren Williams", "position": "RB", "team": "LAR", "injury_status": "Q"},
+}
+
+
+def test_resolve_known_player():
+    p = _resolve("100", DUMP)
+    assert p.name == "Puka Nacua" and p.position == "WR" and p.injury_status == ""
+
+
+def test_resolve_unknown_player_falls_back_to_placeholder():
+    p = _resolve("999", DUMP)
+    assert p.id == "999" and "999" in p.name
+
+
+def test_resolve_empty_slot():
+    p = _resolve("0", DUMP)
+    assert p.name == "(empty)"
+
+
+def test_roster_view_splits_starters_and_bench_and_flags_me():
+    raw = {"roster_id": 1, "owner_id": "u1", "starters": ["100"], "players": ["100", "200"],
+           "settings": {"wins": 2, "losses": 1}}
+    users = {"u1": {"display_name": "Me"}}
+    rv = _roster_view(raw, users, my_user_id="u1", dump=DUMP)
+    assert rv.is_me is True
+    assert [p.id for p in rv.starters] == ["100"]
+    assert [p.id for p in rv.bench] == ["200"]
+    assert rv.record == "2-1"
+
+
+# ---------------------------------------------------------------------------
+# decide.py - the agentic loop against a stubbed Anthropic client
+# ---------------------------------------------------------------------------
+
+def _fake_state():
+    me = RosterView(roster_id="1", owner_name="Me", is_me=True,
+                    starters=[PlayerRef("100", "Puka Nacua", "WR", "LAR")],
+                    bench=[PlayerRef("200", "Kyren Williams", "RB", "LAR", "Q")])
+    return SimpleNamespace(
+        league_id="L1", league_name="I MEAN WE COULDD", season=2026, week=3,
+        scoring_format="redraft", waiver_type="faab", waiver_budget_total=100,
+        roster_positions=["QB", "RB", "WR"], my_roster=me, opponent=None,
+        other_rosters=[], free_agents=[], recent_transactions=[],
+    )
+
+
+class _FakeToolUseBlock:
+    type = "tool_use"
+    name = "submit_decisions"
+
+    def __init__(self, data):
+        self.input = data
+
+
+class _FakeResponse:
+    def __init__(self, content, stop_reason):
+        self.content = content
+        self.stop_reason = stop_reason
+
+
+def test_decide_returns_decision_once_model_calls_submit_tool(monkeypatch):
+    payload = {
+        "summary": "Starting Puka, no moves this week.",
+        "lineup_changes": [], "waiver_claims": [], "trade_proposals": [], "notes": "",
+    }
+
+    calls = []
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return _FakeResponse([_FakeToolUseBlock(payload)], "tool_use")
+
+    class FakeClient:
+        def __init__(self, *a, **kw):
+            self.messages = FakeMessages()
+
+    monkeypatch.setattr("app.league_manager.decide.anthropic.Anthropic", FakeClient)
+
+    result = decide(_fake_state())
+    assert isinstance(result, Decision)
+    assert result.summary == "Starting Puka, no moves this week."
+    assert result.has_actions is False
+    assert calls[0]["model"] == "claude-opus-5"
+
+
+def test_decide_nudges_model_that_stops_without_submitting(monkeypatch):
+    payload = {"summary": "ok", "lineup_changes": [], "waiver_claims": [],
+               "trade_proposals": [], "notes": ""}
+    responses = [
+        _FakeResponse([SimpleNamespace(type="text", text="thinking out loud")], "end_turn"),
+        _FakeResponse([_FakeToolUseBlock(payload)], "tool_use"),
+    ]
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            return responses.pop(0)
+
+    class FakeClient:
+        def __init__(self, *a, **kw):
+            self.messages = FakeMessages()
+
+    monkeypatch.setattr("app.league_manager.decide.anthropic.Anthropic", FakeClient)
+
+    result = decide(_fake_state())
+    assert result.summary == "ok"
+
+
+# ---------------------------------------------------------------------------
+# notify.py - message formatting is pure text, easy to pin down
+# ---------------------------------------------------------------------------
+
+def test_format_message_dry_run_marks_actions_hypothetical():
+    d = Decision(summary="Bench the injured guy.",
+                 waiver_claims=[{"add_player_name": "Free Agent", "drop_player_name": "",
+                                "faab_bid": 5, "reasoning": "upside"}])
+    title, body = format_message("I MEAN WE COULDD", d, dry_run=True,
+                                 executed=["[dry-run] would claim Free Agent for $5 FAAB"],
+                                 failed=[])
+    assert "DRY RUN" in title
+    assert "Free Agent" in body
+    assert "would claim" in body
+
+
+def test_format_message_no_actions_says_so():
+    d = Decision(summary="Everything looks right.")
+    _, body = format_message("League", d, dry_run=True, executed=[], failed=[])
+    assert "No moves this check-in" in body
