@@ -25,6 +25,13 @@ FANTASY_POSITIONS = {"QB", "RB", "WR", "TE", "K", "DEF"}
 #: `search_rank` (lower = more relevant). Keeps the prompt bounded.
 FREE_AGENT_LIMIT = 150
 
+#: How many trending players to show, and how far back "trending" looks.
+#: This is a real signal (platform-wide add/drop counts across every Sleeper
+#: manager, not a vibe) - a much more reliable breakout-star detector than
+#: hoping web search surfaces the right tweet.
+TRENDING_LIMIT = 20
+TRENDING_LOOKBACK_HOURS = 24
+
 
 @dataclass
 class PlayerRef:
@@ -33,11 +40,14 @@ class PlayerRef:
     position: str
     team: Optional[str]
     injury_status: str = ""
+    trend_count: Optional[int] = None  # set only on trending-add/drop entries
 
     def line(self) -> str:
         bits = [self.name, self.position, self.team or "FA"]
         if self.injury_status:
             bits.append(self.injury_status)
+        if self.trend_count is not None:
+            bits.append(f"{self.trend_count:,}/24h")
         return " · ".join(bits)
 
 
@@ -66,6 +76,10 @@ class LeagueManagerState:
     other_rosters: list[RosterView]
     free_agents: list[PlayerRef]
     recent_transactions: list[str]  # human-readable one-liners, most recent first
+    #: Platform-wide, not scoped to this league - real signal for who's
+    #: trending up/down across all of Sleeper right now.
+    trending_adds: list[PlayerRef]
+    trending_drops: list[PlayerRef]
 
 
 def _http() -> HttpClient:
@@ -127,6 +141,24 @@ def _transactions(http: HttpClient, league_id: str, week: int,
         if bits:
             lines.append(f"{kind}: {' '.join(bits)}{bid_note}")
     return lines
+
+
+def _trending(http: HttpClient, direction: str, dump: dict[str, dict]) -> list[PlayerRef]:
+    try:
+        raw = http.get(f"{API}/players/nfl/trending/{direction}",
+                       cache_ttl=900,
+                       params={"lookback_hours": TRENDING_LOOKBACK_HOURS, "limit": TRENDING_LIMIT})
+    except ProviderError:
+        return []
+    out = []
+    for row in raw or []:
+        pid = str(row.get("player_id"))
+        ref = _resolve(pid, dump)
+        if not ref.position or ref.position not in FANTASY_POSITIONS:
+            continue
+        ref.trend_count = int(row.get("count") or 0)
+        out.append(ref)
+    return out
 
 
 def gather_state(league_id: str, sleeper_username: str) -> LeagueManagerState:
@@ -191,4 +223,6 @@ def gather_state(league_id: str, sleeper_username: str) -> LeagueManagerState:
         other_rosters=[r for r in rosters if not r.is_me and r.roster_id != opp_roster_id],
         free_agents=free_agents,
         recent_transactions=_transactions(http, league_id, week, dump),
+        trending_adds=_trending(http, "add", dump),
+        trending_drops=_trending(http, "drop", dump),
     )

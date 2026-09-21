@@ -28,6 +28,8 @@ log = logging.getLogger(__name__)
 
 #: See the module docstring - nano/mini gpt-5 models can't use web_search.
 DEFAULT_MODEL = "gpt-4.1-mini"
+#: OpenAI's web_search tool has no per-request search cap (unlike Anthropic's
+#: max_uses) - the real bound is MAX_TURNS and each turn's max_output_tokens.
 MAX_TURNS = 6
 
 SUBMIT_TOOL = {
@@ -154,6 +156,13 @@ def _build_prompt(state: LeagueManagerState) -> str:
         parts += [_format_roster(f"  Team {r.roster_id}", r) for r in state.other_rosters]
     if state.recent_transactions:
         parts += ["", "RECENT LEAGUE TRANSACTIONS:", *state.recent_transactions]
+    if state.trending_adds:
+        parts += ["", "TRENDING ADDS RIGHT NOW (across all of Sleeper, last 24h - "
+                       "real signal for breakouts, not a search guess):",
+                  "; ".join(p.line() for p in state.trending_adds)]
+    if state.trending_drops:
+        parts += ["", "TRENDING DROPS RIGHT NOW (across all of Sleeper, last 24h):",
+                  "; ".join(p.line() for p in state.trending_drops)]
     parts += [
         "",
         f"AVAILABLE FREE AGENTS ({len(state.free_agents)}, most relevant first):",
@@ -163,24 +172,51 @@ def _build_prompt(state: LeagueManagerState) -> str:
 
 
 SYSTEM_PROMPT = """\
-You are managing a real fantasy football team on Sleeper for the user, with \
-full autonomy to set lineups, submit waiver claims and propose trades - no \
-one reviews your decisions before they go out, so be genuinely careful and \
-conservative rather than aggressive for its own sake.
+You are the research engine for a real fantasy football team on Sleeper. \
+Nothing you decide executes automatically - the user reads your \
+recommendation and acts on it themselves - but be as rigorous as if it did: \
+sloppy or unfounded advice wastes their week and, for trade proposals, their \
+credibility with a real person in the league.
 
-Use the web_search tool to ground every call in current information: injury \
-designations, beat-reporter practice reports, published start/sit rankings \
-and waiver-wire targets from mainstream fantasy analysts (e.g. FantasyPros \
-consensus rankings, ESPN, The Athletic, Rotoworld/Rotowire, NFL.com beat \
-writers). Prefer information from the last few days. Do not invent injury \
-statuses, snap counts or expert opinions you haven't actually found - if you \
-can't find something, say so in `notes` rather than guessing.
+RESEARCH METHOD (do this before every call, not just when something looks off):
+
+1. Injury status: search for the player's current official designation and \
+   the most recent practice report / beat-writer update. Prefer the last \
+   2-3 days.
+2. Expert consensus, weighted by track record, not volume: search \
+   "FantasyPros expert accuracy rankings" and prefer analysts who rank well \
+   there over whoever is simply easiest to find. FantasyPros' own consensus \
+   rankings already aggregate many well-regarded analysts (including plenty \
+   who post primarily on X/Twitter) - treat that consensus as a strong prior, \
+   then look for what's changed since it was last updated (injury, role \
+   change, matchup).
+3. On X/Twitter specifically: you generally CANNOT browse timelines or read \
+   individual tweets directly - X blocks most automated access. Don't claim \
+   to have "checked Twitter" - instead search for articles, newsletters or \
+   aggregator posts that cite or summarize what named analysts are saying, \
+   and cite the article, not an imagined tweet.
+4. TRENDING ADDS/DROPS in the prompt below are real platform-wide Sleeper \
+   data (hundreds of thousands of managers), not a search result - treat a \
+   player spiking there as a genuine signal worth investigating further, \
+   not proof on its own.
+5. Cross-reference at least two independent sources before a waiver add or \
+   lineup swap that isn't obvious; for a trade proposal, verify the target \
+   player's value from the other manager's likely perspective too, so the \
+   offer is genuinely fair, not just fair to you.
+
+Do not invent injury statuses, snap counts, target share, or expert opinions \
+you haven't actually found - if you can't find something, say so in `notes` \
+rather than guessing. This applies even in a week where you conclude no \
+roster moves are needed: use web_search at least once, every run, to confirm \
+current injury statuses for your questionable/bench-worthy players before \
+concluding the lineup is already right. The injury_status field already in \
+this prompt comes from Sleeper's own feed and can lag actual news by hours -
+treat it as a starting point to verify, not a substitute for checking.
 
 Only propose a lineup change, waiver claim or trade when you have a real, \
 searched-and-verified reason - it is completely fine to submit empty arrays \
 for a week where the existing lineup is already right and no move is worth \
-making. A trade proposal goes to a real person in this league, so only \
-propose one that is genuinely fair to both sides; do not lowball.
+making.
 
 When you are done researching, call submit_decisions exactly once with your \
 final answer."""
@@ -201,6 +237,7 @@ def decide(state: LeagueManagerState, *, model: Optional[str] = None) -> Decisio
     tools = [{"type": "web_search"}, SUBMIT_TOOL]
 
     searches_used = 0
+    demanded_search = False
     previous_response_id: Optional[str] = None
     next_input = [{"role": "user", "content": _build_prompt(state)}]
 
@@ -216,6 +253,21 @@ def decide(state: LeagueManagerState, *, model: Optional[str] = None) -> Decisio
         searches_used += _count_searches(response.output)
 
         submit_call = _find_function_call(response.output, "submit_decisions")
+        # A model that answers from training-data priors instead of actually
+        # searching is exactly the failure mode this whole pipeline exists to
+        # avoid (confirmed live: it will confidently report injury statuses
+        # without ever calling web_search unless pushed). Force at least one
+        # real search before accepting a submission, once.
+        if submit_call is not None and searches_used == 0 and not demanded_search:
+            demanded_search = True
+            previous_response_id = response.id
+            next_input = [{"role": "user", "content":
+                          "You called submit_decisions without using web_search at all. "
+                          "Use it at least once now to confirm current injury statuses and "
+                          "expert consensus for the players in your decision, then call "
+                          "submit_decisions again with whatever you find (same answer is fine "
+                          "if research confirms it - the point is confirming, not changing)."}]
+            continue
         if submit_call is not None:
             data = json.loads(submit_call.arguments)
             return Decision(
