@@ -240,7 +240,7 @@ def _count_searches(output: list) -> int:
 
 def decide(state: LeagueManagerState, *, model: Optional[str] = None) -> Decision:
     client = OpenAI()
-    model = model or os.getenv("LEAGUE_MANAGER_MODEL", DEFAULT_MODEL)
+    model = model or os.getenv("LEAGUE_MANAGER_MODEL") or DEFAULT_MODEL
     tools = [{"type": "web_search"}, SUBMIT_TOOL]
 
     searches_used = 0
